@@ -178,7 +178,7 @@ class RunLog:
                 f.write(json.dumps(entry) + "\n")
             print(json.dumps(entry), flush=True)
             self.next_log += self.args.log_seconds
-        if elapsed >= self.next_checkpoint:
+        if self.next_checkpoint <= elapsed < self.budget:    # au bout du budget, c'est final.pt
             self.save(f"ckpt_{self.next_checkpoint / 60:07.1f}min.pt", steps)
             self.next_checkpoint += self.args.checkpoint_minutes * 60
 
