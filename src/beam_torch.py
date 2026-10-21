@@ -1,6 +1,7 @@
 """
 Recherche en faisceau en PyTorch, sur CPU ou GPU : un cube à la fois, tout le faisceau
-évalué en un lot, sans aller-retour avec le CPU sauf pour reconstruire la solution.
+évalué en un lot. Une seule synchronisation avec le CPU par profondeur (taille du faisceau suivant, solution
+trouvée ou non), plus une copie pour reconstruire la solution : sur un GPU distant, chacune coûte environ 1 ms.
 
 Le classement des enfants dépend de la tête du réseau :
 - policy : log-probabilité cumulée du chemin (Takano, 2023), une évaluation par état du faisceau ;
@@ -88,13 +89,17 @@ class _Beam:
 
     def path(self, gid):
         depth = bisect.bisect_right(self.offsets, gid) - 1
-        i = gid - self.offsets[depth]
-        moves = []
+        if depth == 0:
+            return []
+        # une seule copie vers le CPU ; l'état d'identifiant g >= 1 a son parent et son coup en position g - 1
+        parents, moves = torch.stack([torch.cat(self.parents[:depth]), torch.cat(self.moves[:depth])]).to(
+            torch.int32).cpu().numpy()
+        path = []
         while depth > 0:
-            moves.append(int(self.moves[depth - 1][i]))
-            i = int(self.parents[depth - 1][i])
+            path.append(int(moves[gid - 1]))
+            gid = self.offsets[depth - 1] + int(parents[gid - 1])
             depth -= 1
-        return moves[::-1]
+        return path[::-1]
 
     def child_path(self, j):
         """Chemin de l'enfant j (indice dans le dernier développement : parent j // 12, coup j % 12)."""
@@ -108,19 +113,23 @@ class _Beam:
         seen, _ = self.lookup(keys)
         return kids, keys, cost.reshape(-1).masked_fill(seen, float("inf")), cum.reshape(-1), evaluations
 
-    def select(self, kids, keys, cost, cum, width):
-        """Garde les `width` meilleurs enfants neufs et distincts ; retourne leur nombre."""
+    @staticmethod
+    def candidates(keys, cost, width):
+        """
+        Les `width` meilleurs enfants neufs et distincts, sans synchronisation : retourne leurs indices triés par
+        coût (les invalides, doublons ou états déjà vus, à la fin) et leur nombre, encore sur le device.
+        """
         order = torch.argsort(cost)
-        by_key = torch.argsort(keys[order], stable=True)     # doublons regroupés, meilleur coût en premier
-        grouped = keys[order][by_key]
+        by_key = order[torch.argsort(keys[order], stable=True)]   # doublons regroupés, meilleur coût en premier
+        grouped = keys[by_key]
         first = torch.ones_like(grouped, dtype=torch.bool)
         first[1:] = grouped[1:] != grouped[:-1]
-        best = order[by_key[first]]
-        best = best[torch.isfinite(cost[best])]
-        if len(best) > width:
-            best = best[torch.topk(cost[best], width, largest=False).indices]
-        if len(best) == 0:
-            return 0
+        unique_cost = cost.scatter(0, by_key, cost[by_key].masked_fill(~first, float("inf")))
+        best_cost, best = torch.sort(unique_cost)
+        return best[:width], torch.isfinite(best_cost[:width]).sum()
+
+    def select(self, kids, keys, cum, best):
+        """Le faisceau suivant : les enfants d'indices `best` (non vide)."""
         self.parents.append(best // 12)
         self.moves.append(best % 12)
         self.states, self.cum = kids[best], cum[best]
@@ -131,7 +140,11 @@ class _Beam:
         order = torch.argsort(all_keys)
         self.seen_keys = all_keys[order]
         self.seen_ids = torch.cat([self.seen_ids, ids])[order]
-        return len(best)
+
+
+def _to_host(*scalars):
+    """Plusieurs scalaires du device copiés vers le CPU en une seule synchronisation."""
+    return torch.stack([s.long() for s in scalars]).tolist()
 
 
 @torch.no_grad()
@@ -173,27 +186,39 @@ def solve(heuristic, start, width=512, max_depth=40, bidirectional=False, max_ev
 
         kids, keys, cost, cum, evaluations = forward.expand(heuristic, lambda x: x)
         result["evaluations"] += evaluations
-        for j in (keys == cube.solved_hash).nonzero().flatten()[:max_checks].tolist():
-            if cube.is_solved(kids[j]):
-                return done(forward.child_path(j))
+        best, n_best = forward.candidates(keys, cost, forward_width)
+        hits = keys == cube.solved_hash
         if bidirectional:
             found, ids = backward.lookup(keys)
+            n_best, any_hit, any_found = _to_host(n_best, hits.any(), found.any())
+        else:
+            (n_best, any_hit), any_found = _to_host(n_best, hits.any()), False
+        if any_hit:
+            for j in hits.nonzero().flatten()[:max_checks].tolist():
+                if cube.is_solved(kids[j]):
+                    return done(forward.child_path(j))
+        if any_found:
             for j in found.nonzero().flatten()[:max_checks].tolist():
                 solution = forward.child_path(j) + inverse_path(backward.path(int(ids[j])))
                 if verified(solution):
                     return done(solution)
-        if forward.select(kids, keys, cost, cum, forward_width) == 0:
+        if n_best == 0:
             break
+        forward.select(kids, keys, cum, best[:n_best])
 
         if bidirectional:
             kids, keys, cost, cum, evaluations = backward.expand(heuristic, backward_key)
             result["evaluations"] += evaluations
+            best, n_best = backward.candidates(keys, cost, width - forward_width)
             found, ids = forward.lookup(keys)
-            for j in found.nonzero().flatten()[:max_checks].tolist():
-                solution = forward.path(int(ids[j])) + inverse_path(backward.child_path(j))
-                if verified(solution):
-                    return done(solution)
-            if backward.select(kids, keys, cost, cum, width - forward_width) == 0:
+            n_best, any_found = _to_host(n_best, found.any())
+            if any_found:
+                for j in found.nonzero().flatten()[:max_checks].tolist():
+                    solution = forward.path(int(ids[j])) + inverse_path(backward.child_path(j))
+                    if verified(solution):
+                        return done(solution)
+            if n_best == 0:
                 break
+            backward.select(kids, keys, cum, best[:n_best])
     result["time_s"] = time.perf_counter() - t0
     return result
