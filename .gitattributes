@@ -1,0 +1,2 @@
+# Le script de session tourne sous Linux : fins de ligne LF obligatoires
+*.sh text eol=lf

@@ -1,0 +1,21 @@
+# Sorties des entraînements (checkpoints, journaux, courbes)
+runs/
+*.pt
+
+# Jeu de test téléchargé (DeepCubeA via EfficientCube)
+data/
+
+# Cache Python
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Environnements virtuels
+venv/
+.venv/
+
+# IDE et système
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
