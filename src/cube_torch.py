@@ -25,6 +25,7 @@ class TorchCube:
 
         self.moves = t(fc.MOVES)                                  # (12, 54)
         self.inverse_action = t(fc.INVERSE_ACTION)                # (12,)
+        self.inverse_or_none = t(np.append(fc.INVERSE_ACTION, 12))  # (13,), 12 : pas de coup
         self.solved = t(fc.SOLVED, torch.uint8)                   # (54,)
         self.facelet_face = t(fc.FACELET_FACE)                    # (54,)
         self.corner_idx = t(fc.CORNER_IDX)                        # (8, 3)
@@ -114,23 +115,26 @@ class TorchCube:
     def random_walks(self, n, length, generator=None):
         """
         n mélanges de `length` coups, règle de Cube.scramble (pas l'inverse du coup précédent, pas trois fois
-        de suite le même coup). Retourne les états après chaque coup (length, n, 54) et les coups (length, n).
+        de suite le même coup), chaque coup tiré uniformément parmi les coups permis. Aucune synchronisation
+        avec le CPU (pas de tirage par rejet) : sur un GPU distant, chacune coûte environ 1 ms.
+        Retourne les états après chaque coup (length, n, 54) et les coups (length, n).
         """
         states = self.solved.expand(n, 54)
-        last = torch.full((n,), -1, dtype=torch.long, device=self.device)
-        before_last = last.clone()
+        none = torch.full((n,), 12, dtype=torch.long, device=self.device)    # 12 : aucun coup interdit
+        last, repeated = none, torch.zeros(n, dtype=torch.bool, device=self.device)
+        uniform = torch.rand(length, n, device=self.device, generator=generator)
         all_states, all_actions = [], []
-        for _ in range(length):
-            actions = torch.randint(0, 12, (n,), device=self.device, generator=generator)
-            while True:
-                bad = (last >= 0) & ((actions == self.inverse_action[last.clamp(min=0)]) |
-                                     ((actions == last) & (last == before_last)))
-                n_bad = int(bad.sum())
-                if n_bad == 0:
-                    break
-                actions[bad] = torch.randint(0, 12, (n_bad,), device=self.device, generator=generator)
+        for step in range(length):
+            # coups interdits : l'inverse du précédent, et le précédent s'il vient d'être joué deux fois
+            forbidden = torch.stack([self.inverse_or_none[last], torch.where(repeated, last, none)])
+            low, high = forbidden.min(dim=0).values, forbidden.max(dim=0).values
+            n_allowed = 12 - (forbidden < 12).sum(dim=0)
+            # r-ième coup permis : on saute les coups interdits, dans l'ordre croissant
+            actions = torch.minimum((uniform[step] * n_allowed).long(), n_allowed - 1)
+            actions = actions + (actions >= low)
+            actions = actions + (actions >= high)
             states = self.apply_actions(states, actions)
-            before_last, last = last, actions
+            repeated, last = actions == last, actions
             all_states.append(states)
             all_actions.append(actions)
         return torch.stack(all_states), torch.stack(all_actions)
