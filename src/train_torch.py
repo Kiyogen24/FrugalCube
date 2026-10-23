@@ -193,6 +193,8 @@ def add_training_arguments(parser):
     parser.add_argument("--width", type=int, default=1000)
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--canonical", action="store_true")
+    parser.add_argument("--value-detach", action="store_true",
+                        help="la tête value ne modifie pas le tronc (tête ajoutée sans gêner la politique)")
     parser.add_argument("--init", help="checkpoint de départ (son architecture remplace --hidden/--width/...)")
     parser.add_argument("--walks", type=int, default=1000, help="mélanges par pas (lot = walks x length)")
     parser.add_argument("--length", type=int, default=26)
@@ -221,7 +223,7 @@ def setup(args):
         net, _ = nt.load(args.init, device)
     else:
         net = nt.ResMLP(args.encoding, args.hidden, args.width, args.blocks, args.heads.split(","),
-                        args.canonical).to(device)
+                        args.canonical, args.value_detach).to(device)
     return cube, generator, net
 
 

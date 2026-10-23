@@ -84,6 +84,49 @@ def test_evaluation_budget_and_failure():
     assert bt.solve(Uniform(), CUBE.solved, width=8)["solution"] == []
 
 
+VIEWS = ["id", "inv", "c5", "ic5", "c30", "ic41"]
+
+
+def test_every_view_maps_back_to_an_optimal_solution():
+    for seed in range(6):
+        state, distance = scrambled(200 + seed, 1 + seed % 4)
+        for name in VIEWS:
+            result = bt.solve(Uniform(), state, width=2048, max_depth=6, views=[name])
+            check(state, result)
+            assert len(result["solution"]) == distance
+
+
+def test_multi_root_beam_and_portfolio_find_optimal_solutions():
+    for seed in range(6):
+        # profondeur au plus 3 : avec six racines, le faisceau reste un parcours en largeur exact
+        state, distance = scrambled(300 + seed, 1 + seed % 3)
+        result = bt.solve(Uniform(), state, width=2048, max_depth=6, views=VIEWS + ["id"])   # doublon toléré
+        check(state, result)
+        assert len(result["solution"]) == distance
+        portfolio = bt.solve_portfolio(Uniform(), state, ["id", "inv", "c5"], width=2048, max_depth=6)
+        check(state, portfolio)
+        assert len(portfolio["solution"]) == distance
+        assert portfolio["evaluations"] > bt.solve(Uniform(), state, width=2048, max_depth=6)["evaluations"]
+    with pytest.raises(ValueError):
+        bt.solve(Uniform(), state, views=["id", "inv"], bidirectional=True)
+
+
+def test_actor_critic_scores_combine_parent_value_and_policy():
+    torch.manual_seed(1)
+    states = CUBE.from_numpy(np.stack([fc.scramble(np.random.default_rng(i), 12)[0] for i in range(5)]))
+    for canonical in (False, True):
+        model = nt.ResMLP(hidden=64, width=32, blocks=1, heads=("policy", "value"), canonical=canonical).eval()
+        heuristic = bt.NetworkHeuristic(model, CUBE, "ac", lam=1.5)
+        cost, cum, evaluations = heuristic(states, CUBE.children(states), torch.zeros(5))
+        logp = torch.log_softmax(heuristic.outputs(states, "policy"), dim=1)
+        assert torch.allclose(cost, heuristic.outputs(states, "value")[:, None] - 1.5 * logp, atol=1e-5)
+        assert evaluations == 5 and heuristic.evaluations(5) == 5 and torch.equal(cum, torch.zeros(5, 12))
+        state, _ = scrambled(400, 3)
+        check(state, bt.solve(heuristic, state, width=2048, max_depth=6))
+    with pytest.raises(ValueError):
+        bt.NetworkHeuristic(nt.ResMLP(hidden=16, width=8, blocks=1, heads=("policy",)), CUBE, "ac")
+
+
 def test_canonical_heuristic_is_symmetry_equivariant(tmp_path):
     torch.manual_seed(0)
     model = nt.ResMLP(hidden=64, width=32, blocks=1, heads=("policy", "value", "q"), canonical=True).eval()

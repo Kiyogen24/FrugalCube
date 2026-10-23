@@ -4,10 +4,13 @@ d'un dossier d'entraînement : chaque checkpoint donne un point de la courbe « 
 d'entraînement » (taux de résolution, part de solutions optimales, longueur moyenne, coût de la recherche).
 Option --scramble-depth : cubes mélangés de d coups (graine seed x 1000 + d) à la place du jeu
 de DeepCubeA ; la longueur optimale n'est alors pas connue.
+Option --views : vues multiples (voir beam_torch.equivalent_views), un seul faisceau à plusieurs racines, ou un
+faisceau de largeur --width par vue avec --separate-views.
 
 Usage :
     python src/eval_torch.py runs/auto_supervise/final.pt --cases 1000 --width 65536
     python src/eval_torch.py runs/auto_supervise --cases 200 --width 4096 --out logs/courbe.jsonl
+    python src/eval_torch.py runs/deux_tetes/final.pt --mode ac --lam 4 --views id,inv --separate-views --width 8192
 """
 import argparse
 import json
@@ -39,10 +42,16 @@ def summarize(runs):
     }
 
 
-def evaluate(heuristic, cases, width, max_depth=40, bidirectional=False, max_evaluations=None):
-    runs = [(bt.solve(heuristic, state, width=width, max_depth=max_depth, bidirectional=bidirectional,
-                      max_evaluations=max_evaluations), optimal) for state, optimal in cases]
-    return summarize(runs)
+def evaluate(heuristic, cases, width, max_depth=40, bidirectional=False, max_evaluations=None, views=None,
+             separate_views=False):
+    options = dict(width=width, max_depth=max_depth, bidirectional=bidirectional, max_evaluations=max_evaluations)
+
+    def run(state):
+        if views and separate_views:
+            return bt.solve_portfolio(heuristic, state, views, **options)
+        return bt.solve(heuristic, state, views=views, **options)
+
+    return summarize([(run(state), optimal) for state, optimal in cases])
 
 
 def checkpoints_of(path):
@@ -63,7 +72,11 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--max-depth", type=int, default=40)
-    parser.add_argument("--mode", choices=["policy", "value", "q"], help="tête utilisée (par défaut : policy, puis q, puis value)")
+    parser.add_argument("--mode", choices=["policy", "value", "q", "ac"],
+                        help="classement (par défaut : policy, puis q, puis value) ; ac : acteur-critique")
+    parser.add_argument("--lam", type=float, default=2.0, help="poids de la politique en mode ac")
+    parser.add_argument("--views", help="vues multiples séparées par des virgules, par ex. id,inv,c13,c29")
+    parser.add_argument("--separate-views", action="store_true", help="un faisceau par vue au lieu d'un seul")
     parser.add_argument("--bidirectional", action="store_true")
     parser.add_argument("--max-evaluations", type=int, help="budget d'évaluations du réseau par cube")
     parser.add_argument("--chunk", type=int, default=1 << 16, help="états par passe du réseau")
@@ -79,13 +92,16 @@ def main():
     else:
         cases = [(cube.from_numpy(s), o) for s, o in deepcubea_testset.load(args.cases)]
         print(f"{len(cases)} cas, longueur optimale moyenne {np.mean([o for _, o in cases]):.2f}", flush=True)
+    views = args.views.split(",") if args.views else None
     for checkpoint in checkpoints_of(args.path):
         model, meta = nt.load(checkpoint, args.device)
-        heuristic = bt.NetworkHeuristic(model, cube, args.mode, args.chunk)
-        summary = evaluate(heuristic, cases, args.width, args.max_depth, args.bidirectional, args.max_evaluations)
+        heuristic = bt.NetworkHeuristic(model, cube, args.mode, args.chunk, args.lam)
+        summary = evaluate(heuristic, cases, args.width, args.max_depth, args.bidirectional, args.max_evaluations,
+                           views, args.separate_views)
         entry = {"checkpoint": checkpoint, "elapsed_s": meta.get("elapsed_s"), "examples": meta.get("examples"),
-                 "steps": meta.get("steps"), "mode": heuristic.mode, "width": args.width,
-                 "bidirectional": args.bidirectional, "cases": len(cases), "scramble_depth": args.scramble_depth,
+                 "steps": meta.get("steps"), "mode": heuristic.mode, "lam": args.lam if heuristic.mode == "ac" else None,
+                 "width": args.width, "bidirectional": args.bidirectional, "views": views,
+                 "separate_views": args.separate_views, "cases": len(cases), "scramble_depth": args.scramble_depth,
                  **summary}
         length = f"{summary['mean_length']:.2f}" if summary["mean_length"] is not None else "-"
         optimal = f"{summary['optimal_rate']:.0%}" if summary["optimal_rate"] is not None else "-"

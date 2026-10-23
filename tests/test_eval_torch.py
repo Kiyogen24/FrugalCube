@@ -1,4 +1,34 @@
+import math
+
+import numpy as np
+import torch
+
+import cube_torch as ct
 import eval_torch
+import fast_cube as fc
+
+CUBE = ct.TorchCube("cpu")
+
+
+class Uniform:
+    """Heuristique constante : le faisceau devient un parcours en largeur s'il est assez large."""
+    cube, mode = CUBE, "policy"
+
+    def evaluations(self, n):
+        return n
+
+    def __call__(self, states, kids, cum):
+        child_cum = cum[:, None].expand(len(states), 12) + math.log(12)
+        return child_cum, child_cum, len(states)
+
+
+def test_evaluate_with_views_in_one_beam_or_separate_beams():
+    rng = np.random.default_rng(5)
+    cases = [(CUBE.from_numpy(fc.scramble(rng, 3)[0]), None) for _ in range(3)]
+    for separate in (False, True):
+        summary = eval_torch.evaluate(Uniform(), cases, width=2048, max_depth=5, views=["id", "inv", "c7"],
+                                      separate_views=separate)
+        assert summary["solved"] == 1.0 and max(summary["lengths"]) <= 3
 
 
 def run(solution, evaluations=10):

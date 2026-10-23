@@ -27,13 +27,17 @@ class ResMLP(nn.Module):
     """
     encoding : "pieces" (one-hot 480 de cube_torch.encode) ou "stickers" (one-hot 324 de encode_stickers) ;
     canonical : le réseau attend des états ramenés à leur forme canonique (symétries), et ses sorties par
-    action sont exprimées dans ce repère. Ces réglages voyagent avec les poids dans les checkpoints.
+    action sont exprimées dans ce repère ;
+    value_detach : la tête value apprend sur les caractéristiques du tronc sans les modifier (pas de gradient
+    vers le tronc), pour qu'une tête value ajoutée ne dégrade pas la politique.
+    Ces réglages voyagent avec les poids dans les checkpoints.
     """
 
-    def __init__(self, encoding="pieces", hidden=5000, width=1000, blocks=4, heads=("policy",), canonical=False):
+    def __init__(self, encoding="pieces", hidden=5000, width=1000, blocks=4, heads=("policy",), canonical=False,
+                 value_detach=False):
         super().__init__()
         self.config = dict(encoding=encoding, hidden=hidden, width=width, blocks=blocks, heads=list(heads),
-                           canonical=canonical)
+                           canonical=canonical, value_detach=value_detach)
         self.body = nn.Sequential(
             nn.Linear(INPUT_SIZES[encoding], hidden), nn.BatchNorm1d(hidden), nn.ReLU(),
             nn.Linear(hidden, width), nn.BatchNorm1d(width), nn.ReLU(),
@@ -42,7 +46,8 @@ class ResMLP(nn.Module):
 
     def forward(self, x):
         z = self.body(x)
-        out = {h: layer(z) for h, layer in self.heads.items()}
+        out = {h: layer(z.detach() if h == "value" and self.config["value_detach"] else z)
+               for h, layer in self.heads.items()}
         if "value" in out:
             out["value"] = out["value"].squeeze(-1)
         return out

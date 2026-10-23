@@ -34,7 +34,7 @@ Work in progress: the PyTorch pipeline is tested on CPU, and the first GPU sessi
 | `src/network_torch.py` | Residual MLP with `policy`, `value` and `q` heads |
 | `src/train_torch.py` | Time-budgeted training with regular checkpoints, prioritized replay (`--per`) and canonical form (`--canonical`) |
 | `src/expert_iteration_torch.py` | Search → labels loop |
-| `src/beam_torch.py` | Beam search ranked by the policy, the Q head or the value, forward or bidirectional |
+| `src/beam_torch.py` | Beam search ranked by the policy, the Q head, the value, or both heads of one network (actor-critic: value of the parent plus policy of the move); forward, bidirectional, or from several equivalent views of the cube (its inverse and symmetric conjugates), in one beam or one beam per view |
 | `src/eval_torch.py` | Evaluation on the DeepCubeA test set, for one checkpoint or a whole run |
 | `src/bench_torch.py` | Data generation, training and search throughput |
 | `gpu_session.sh` | Full GPU session: tests, throughput, the three methods, curves, RL variants, final evaluation |
@@ -51,6 +51,8 @@ python -m pytest
 ```bash
 python src/train_torch.py --minutes 90 --heads policy --canonical --out-dir runs/ours
 python src/eval_torch.py runs/ours --cases 200 --width 4096 --out runs/curve_ours.jsonl
+python src/train_torch.py --minutes 60 --heads policy,value --value-weight 0.1 --encoding stickers --out-dir runs/two_heads
+python src/eval_torch.py runs/two_heads/final.pt --mode ac --lam 2 --views id,inv --separate-views --width 8192
 nohup bash gpu_session.sh > runs/session.log 2>&1 &
 ```
 

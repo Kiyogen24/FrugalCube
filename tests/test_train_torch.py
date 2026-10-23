@@ -22,6 +22,19 @@ class ConstantQ(torch.nn.Module):
         return {"q": torch.full((len(x), 12), self.value)}
 
 
+def test_detached_value_head_learns_without_changing_the_trunk():
+    torch.manual_seed(0)
+    states, _, depths = CUBE.self_supervised_batch(30, 6, generator=torch.Generator().manual_seed(0))
+    x = CUBE.encode(states)
+    for detach in (True, False):
+        net = nt.ResMLP(hidden=32, width=16, blocks=1, heads=("policy", "value"), value_detach=detach)
+        ((net(x)["value"] - depths.float()) ** 2).mean().backward()
+        trunk = [p.grad for p in net.body.parameters()]
+        assert all(g is None for g in trunk) == detach
+        assert net.heads["value"].weight.grad.abs().sum() > 0
+    assert nt.ResMLP(heads=("policy",), hidden=8, width=8, blocks=1).config["value_detach"] is False
+
+
 def test_q_targets_use_solved_children_and_scramble_bounds():
     g = torch.Generator().manual_seed(0)
     states, labels, depths = CUBE.self_supervised_batch(20, 3, generator=g)
