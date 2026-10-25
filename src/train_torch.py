@@ -88,9 +88,10 @@ class Trainer:
         self.heads, self.canonical = net.config["heads"], net.config["canonical"]
         self.encode = cube.encode if net.config["encoding"] == "pieces" else cube.encode_stickers
         self.model = torch.compile(net) if args.compile else net
-        self.optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
+        self.optimizer = torch.optim.Adam([p for p in net.parameters() if p.requires_grad], lr=args.lr)
         self.target = copy.deepcopy(net).eval().requires_grad_(False) if "q" in self.heads else None
-        self.amp = cube.device.type == "cuda"
+        self.amp = cube.device.type == "cuda" or getattr(args, "bf16", False)
+        self.freeze_body = getattr(args, "freeze_body", False)
         self.steps = 0
 
     def set_lr(self, lr):
@@ -108,7 +109,9 @@ class Trainer:
             states, k = cube.canonicalize(states)
             labels = cube.action_perm[k, labels]
         self.model.train()
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.amp):
+        if self.freeze_body:
+            self.net.body.eval()            # tronc figé : BatchNorm avec ses statistiques apprises
+        with torch.autocast(cube.device.type, dtype=torch.bfloat16, enabled=self.amp):
             out = self.model(self.encode(states))
         per_example = torch.zeros(len(states), device=states.device)
         metrics = {}
@@ -195,6 +198,10 @@ def add_training_arguments(parser):
     parser.add_argument("--canonical", action="store_true")
     parser.add_argument("--value-detach", action="store_true",
                         help="la tête value ne modifie pas le tronc (tête ajoutée sans gêner la politique)")
+    parser.add_argument("--value-hidden", type=int, default=0, help="tête value en petit MLP de cette taille")
+    parser.add_argument("--freeze-body", action="store_true",
+                        help="avec --init : tronc et têtes du checkpoint figés, seules les têtes ajoutées apprennent")
+    parser.add_argument("--bf16", action="store_true", help="précision bf16 aussi sur CPU (toujours sur GPU)")
     parser.add_argument("--init", help="checkpoint de départ (son architecture remplace --hidden/--width/...)")
     parser.add_argument("--walks", type=int, default=1000, help="mélanges par pas (lot = walks x length)")
     parser.add_argument("--length", type=int, default=26)
@@ -219,11 +226,25 @@ def setup(args):
     device = torch.device(args.device)
     cube = ct.TorchCube(device)
     generator = torch.Generator(device).manual_seed(args.seed)
+    if args.freeze_body and not args.init:
+        raise ValueError("--freeze-body suppose un réseau déjà entraîné (--init)")
     if args.init:
         net, _ = nt.load(args.init, device)
+        added = [h for h in args.heads.split(",") if h not in net.config["heads"]]
+        if added:   # têtes ajoutées à un réseau entraîné, initialisées au hasard
+            config = dict(net.config, heads=net.config["heads"] + added, value_hidden=args.value_hidden)
+            grown = nt.ResMLP(**config).to(device)
+            missing, unexpected = grown.load_state_dict(net.state_dict(), strict=False)
+            assert not unexpected and all(k.split(".")[1] in added for k in missing), (missing, unexpected)
+            net = grown
+        if args.freeze_body:
+            if not added:
+                raise ValueError("--freeze-body : aucune tête ajoutée à entraîner (voir --heads)")
+            for name, p in net.named_parameters():
+                p.requires_grad_(name.startswith("heads.") and name.split(".")[1] in added)
     else:
         net = nt.ResMLP(args.encoding, args.hidden, args.width, args.blocks, args.heads.split(","),
-                        args.canonical, args.value_detach).to(device)
+                        args.canonical, args.value_detach, args.value_hidden).to(device)
     return cube, generator, net
 
 

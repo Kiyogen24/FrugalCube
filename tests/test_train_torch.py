@@ -92,3 +92,19 @@ def test_training_can_start_from_a_checkpoint(tmp_path):
     out2 = run_training(tmp_path / "suite", "--init", str(out / "final.pt"))
     model, _ = nt.load(out2 / "final.pt")
     assert model.config["encoding"] == "stickers"
+
+
+def test_value_head_added_to_a_frozen_trained_network(tmp_path):
+    out = run_training(tmp_path, "--heads", "policy", "--encoding", "stickers")
+    grown = run_training(tmp_path / "tete", "--init", str(out / "final.pt"), "--heads", "policy,value",
+                         "--value-hidden", "16", "--freeze-body", "--bf16")
+    before, _ = nt.load(out / "final.pt")
+    after, _ = nt.load(grown / "final.pt")
+    assert after.config["heads"] == ["policy", "value"] and after.config["value_hidden"] == 16
+    # tronc (statistiques des BatchNorm comprises) et politique strictement inchangés
+    for key, tensor in before.state_dict().items():
+        assert torch.equal(tensor, after.state_dict()[key]), key
+    x = CUBE.encode_stickers(CUBE.self_supervised_batch(4, 5)[0])
+    assert torch.equal(before(x)["policy"], after(x)["policy"]) and after(x)["value"].shape == (20,)
+    entries = [json.loads(line) for line in open(grown / "train_log.jsonl")]
+    assert "value_loss" in entries[-1]

@@ -29,20 +29,28 @@ class ResMLP(nn.Module):
     canonical : le réseau attend des états ramenés à leur forme canonique (symétries), et ses sorties par
     action sont exprimées dans ce repère ;
     value_detach : la tête value apprend sur les caractéristiques du tronc sans les modifier (pas de gradient
-    vers le tronc), pour qu'une tête value ajoutée ne dégrade pas la politique.
+    vers le tronc), pour qu'une tête value ajoutée ne dégrade pas la politique ;
+    value_hidden : si > 0, la tête value est un petit MLP (une couche cachée de cette taille) au lieu d'une
+    couche linéaire.
     Ces réglages voyagent avec les poids dans les checkpoints.
     """
 
     def __init__(self, encoding="pieces", hidden=5000, width=1000, blocks=4, heads=("policy",), canonical=False,
-                 value_detach=False):
+                 value_detach=False, value_hidden=0):
         super().__init__()
         self.config = dict(encoding=encoding, hidden=hidden, width=width, blocks=blocks, heads=list(heads),
-                           canonical=canonical, value_detach=value_detach)
+                           canonical=canonical, value_detach=value_detach, value_hidden=value_hidden)
         self.body = nn.Sequential(
             nn.Linear(INPUT_SIZES[encoding], hidden), nn.BatchNorm1d(hidden), nn.ReLU(),
             nn.Linear(hidden, width), nn.BatchNorm1d(width), nn.ReLU(),
             *[ResidualBlock(width) for _ in range(blocks)])
-        self.heads = nn.ModuleDict({h: nn.Linear(width, HEAD_SIZES[h]) for h in heads})
+
+        def head(h):
+            if h == "value" and value_hidden:
+                return nn.Sequential(nn.Linear(width, value_hidden), nn.ReLU(), nn.Linear(value_hidden, 1))
+            return nn.Linear(width, HEAD_SIZES[h])
+
+        self.heads = nn.ModuleDict({h: head(h) for h in heads})
 
     def forward(self, x):
         z = self.body(x)
