@@ -1,13 +1,13 @@
 """
 Évaluation des modèles PyTorch sur le jeu de test de DeepCubeA, pour un checkpoint ou pour tous les checkpoints
-d'un dossier d'entraînement : chaque checkpoint donne un point de la courbe « qualité en fonction du temps
-d'entraînement » (taux de résolution, part de solutions optimales, longueur moyenne, coût de la recherche).
-Option --scramble-depth : cubes mélangés de d coups (graine seed x 1000 + d) à la place du jeu
-de DeepCubeA ; la longueur optimale n'est alors pas connue.
-Option --views : vues multiples (voir beam_torch.equivalent_views), un seul faisceau à plusieurs racines, ou un
+d'un dossier d'entraînement: chaque checkpoint donne un point de la courbe "qualité en fonction du temps
+d'entraînement" (taux de résolution, part de solutions optimales, longueur moyenne, coût de la recherche).
+Option --scramble-depth: cubes mélangés de d coups (graine seed x 1000 + d) à la place du jeu
+de DeepCubeA; la longueur optimale n'est alors pas connue.
+Option --views: vues multiples (voir beam_torch.equivalent_views), un seul faisceau à plusieurs racines, ou un
 faisceau de largeur --width par vue avec --separate-views.
 
-Usage :
+Usage:
     python src/eval_torch.py runs/auto_supervise/final.pt --cases 1000 --width 65536
     python src/eval_torch.py runs/auto_supervise --cases 200 --width 4096 --out logs/courbe.jsonl
     python src/eval_torch.py runs/deux_tetes/final.pt --mode ac --lam 4 --views id,inv --separate-views --width 8192
@@ -27,7 +27,7 @@ import network_torch as nt
 
 
 def summarize(runs):
-    """runs : liste de (résultat de beam_torch.solve, longueur optimale ou None si inconnue)."""
+    """runs: liste de (résultat de beam_torch.solve, longueur optimale ou None si inconnue)."""
     solved = [(r, o) for r, o in runs if r["solution"] is not None]
     known = all(o is not None for _, o in runs)
     return {

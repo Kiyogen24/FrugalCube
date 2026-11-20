@@ -1,8 +1,8 @@
 """
 Version PyTorch de fast_cube, pour générer les données et chercher sur GPU.
 
-Mêmes conventions et mêmes tables que fast_cube (elles en sont copiées), ce que vérifient les tests : un état
-est la permutation des 54 facettes dans l'ordre Kociemba, stockée en uint8 ; un lot d'états est un tenseur
+Mêmes conventions et mêmes tables que fast_cube (elles en sont copiées), ce que vérifient les tests: un état
+est la permutation des 54 facettes dans l'ordre Kociemba, stockée en uint8; un lot d'états est un tenseur
 (N, 54). Toutes les opérations restent sur le device des tenseurs, sans aller-retour avec le CPU.
 """
 import numpy as np
@@ -15,24 +15,25 @@ _SIGN_BIT = -(2 ** 63)
 
 
 class TorchCube:
-    """Tables du cube sur un device (CPU ou GPU) et opérations par lots."""
+    """tables du cube sur un device (CPU ou GPU) et opérations par lots."""
 
     def __init__(self, device="cpu"):
         self.device = torch.device(device)
+        self.n_moves = 12
 
         def t(array, dtype=torch.long):
             return torch.as_tensor(np.asarray(array), dtype=dtype, device=self.device)
 
         self.moves = t(fc.MOVES)                                  # (12, 54)
         self.inverse_action = t(fc.INVERSE_ACTION)                # (12,)
-        self.inverse_or_none = t(np.append(fc.INVERSE_ACTION, 12))  # (13,), 12 : pas de coup
+        self.inverse_or_none = t(np.append(fc.INVERSE_ACTION, 12))  # (13,), 12: pas de coup
         self.solved = t(fc.SOLVED, torch.uint8)                   # (54,)
         self.facelet_face = t(fc.FACELET_FACE)                    # (54,)
         self.corner_idx = t(fc.CORNER_IDX)                        # (8, 3)
         self.edge_idx = t(fc.EDGE_IDX)                            # (12, 2)
         self.corner_lut = t(fc.CORNER_LUT)
         self.edge_lut = t(fc.EDGE_LUT)
-        # mêmes poids que fast_cube : l'arithmétique int64 modulo 2^64 donne la même empreinte (vue en int64)
+        # mêmes poids que fast_cube: l'arithmétique int64 modulo 2^64 donne la même empreinte (vue en int64)
         self.hash_weights = t(fc._HASH_WEIGHTS.view(np.int64))
         self.symmetries = t(fc.SYMMETRIES)                        # (48, 54)
         self.symmetries_inv = t(fc.SYMMETRIES_INV)
@@ -46,7 +47,7 @@ class TorchCube:
         return torch.as_tensor(np.asarray(states), dtype=torch.uint8, device=self.device)
 
     def apply_actions(self, states, actions):
-        """Applique une action par état : states (N, 54), actions (N,) -> (N, 54)."""
+        """Applique une action par état: states (N, 54), actions (N,) -> (N, 54)."""
         return states.gather(1, self.moves[actions])
 
     def apply_sequence(self, state, actions):
@@ -55,16 +56,16 @@ class TorchCube:
         return state
 
     def children(self, states):
-        """Les 12 enfants de chaque état : (N, 54) -> (N, 12, 54)."""
+        """Les 12 enfants de chaque état: (N, 54) -> (N, 12, 54)."""
         return states[:, self.moves]
 
     def inverse(self, states):
-        """Inverse de chaque état dans le groupe du cube : inv[s[i]] = i."""
+        """Inverse de chaque état dans le groupe du cube: inv[s[i]] = i."""
         index = torch.arange(54, device=states.device, dtype=torch.uint8).expand_as(states).contiguous()
         return torch.empty_like(states).scatter_(-1, states.long(), index)
 
     def compose(self, a, b):
-        """État obtenu en appliquant à a les mouvements qui mènent du cube résolu à b."""
+        """état obtenu en appliquant à a les mouvements qui mènent du cube résolu à b."""
         return a.gather(-1, b.long())
 
     def is_solved(self, states):
@@ -75,7 +76,7 @@ class TorchCube:
         return (states.long() * self.hash_weights).sum(dim=-1)
 
     def encode(self, states, dtype=torch.float32):
-        """Encodage one-hot 480 (pièce et orientation de chaque emplacement), identique à fast_cube.encode."""
+        """encodage one-hot 480 (pièce et orientation de chaque emplacement), identique à fast_cube.encode."""
         colours = self.facelet_face[states.long()]                        # (N, 54) faces d'origine 0..5
         c = colours[:, self.corner_idx]                                    # (N, 8, 3)
         corner_cols = self.corner_lut[c[..., 0] * 36 + c[..., 1] * 6 + c[..., 2]]
@@ -87,20 +88,20 @@ class TorchCube:
         return out.reshape(len(states), 480)
 
     def encode_stickers(self, states, dtype=torch.float32):
-        """Encodage one-hot 54 x 6 de la couleur de chaque facette (celui de DeepCubeA, Takano, CayleyPy)."""
+        """encodage one-hot 54 x 6 de la couleur de chaque facette (celui de DeepCubeA, Takano, CayleyPy)."""
         colours = self.facelet_face[states.long()]
         return torch.nn.functional.one_hot(colours, 6).to(dtype).reshape(len(states), 324)
 
     def conjugates(self, states):
-        """Les 48 états symétriques g⁻¹ ∘ s ∘ g de chaque état : (N, 54) -> (N, 48, 54)."""
+        """les 48 états symétriques g⁻¹ ∘ s ∘ g de chaque état: (N, 54) -> (N, 48, 54)."""
         moved = states[:, self.symmetries]                                 # s[g[i]]
         sym_inv = self.symmetries_inv.to(states.dtype).unsqueeze(0).expand(len(states), -1, -1)
         return sym_inv.gather(2, moved.long())
 
     def canonicalize(self, states, chunk=1 << 16):
         """
-        Forme canonique (le symétrique de plus petite empreinte, comme fast_cube.canonicalize) et indice de
-        symétrie k ; l'action a sur l'état d'origine correspond à action_perm[k, a] sur l'état canonique.
+        forme canonique (le symétrique de plus petite empreinte, comme fast_cube.canonicalize) et indice de
+        symétrie k; l'action a sur l'état d'origine correspond à action_perm[k, a] sur l'état canonique.
         """
         canonical = torch.empty_like(states)
         sym_index = torch.empty(len(states), dtype=torch.long, device=states.device)
@@ -116,20 +117,20 @@ class TorchCube:
         """
         n mélanges de `length` coups, règle de Cube.scramble (pas l'inverse du coup précédent, pas trois fois
         de suite le même coup), chaque coup tiré uniformément parmi les coups permis. Aucune synchronisation
-        avec le CPU (pas de tirage par rejet) : sur un GPU distant, chacune coûte environ 1 ms.
+        avec le CPU (pas de tirage par rejet): sur un GPU distant, chacune coûte environ 1 ms.
         Retourne les états après chaque coup (length, n, 54) et les coups (length, n).
         """
         states = self.solved.expand(n, 54)
-        none = torch.full((n,), 12, dtype=torch.long, device=self.device)    # 12 : aucun coup interdit
+        none = torch.full((n,), 12, dtype=torch.long, device=self.device)    # 12: aucun coup interdit
         last, repeated = none, torch.zeros(n, dtype=torch.bool, device=self.device)
         uniform = torch.rand(length, n, device=self.device, generator=generator)
         all_states, all_actions = [], []
         for step in range(length):
-            # coups interdits : l'inverse du précédent, et le précédent s'il vient d'être joué deux fois
+            # coups interdits: l'inverse du précédent, et le précédent s'il vient d'être joué deux fois
             forbidden = torch.stack([self.inverse_or_none[last], torch.where(repeated, last, none)])
             low, high = forbidden.min(dim=0).values, forbidden.max(dim=0).values
             n_allowed = 12 - (forbidden < 12).sum(dim=0)
-            # r-ième coup permis : on saute les coups interdits, dans l'ordre croissant
+            # r-ième coup permis: on saute les coups interdits, dans l'ordre croissant
             actions = torch.minimum((uniform[step] * n_allowed).long(), n_allowed - 1)
             actions = actions + (actions >= low)
             actions = actions + (actions >= high)
@@ -141,7 +142,7 @@ class TorchCube:
 
     def self_supervised_batch(self, n_walks, length, generator=None):
         """
-        Exemples auto-supervisés : chaque préfixe de chaque mélange donne un état, avec pour étiquette
+        exemples auto-supervisés: chaque préfixe de chaque mélange donne un état, avec pour étiquette
         l'inverse du dernier coup et pour profondeur la longueur du préfixe (borne supérieure de la vraie
         distance). Retourne (états (n·length, 54), étiquettes, profondeurs).
         """

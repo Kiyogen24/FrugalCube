@@ -1,23 +1,23 @@
 """
-Recherche en faisceau en PyTorch, sur CPU ou GPU : un cube à la fois, tout le faisceau
+recherche en faisceau en PyTorch, sur CPU ou GPU: un cube à la fois, tout le faisceau
 évalué en un lot. Une seule synchronisation avec le CPU par profondeur (taille du faisceau suivant, solution
-trouvée ou non), plus une copie pour reconstruire la solution : sur un GPU distant, chacune coûte environ 1 ms.
+trouvée ou non), plus une copie pour reconstruire la solution: sur un GPU distant, chacune coûte environ 1 ms.
 
-Le classement des enfants dépend de la tête du réseau :
-- policy : log-probabilité cumulée du chemin (Takano, 2023), une évaluation par état du faisceau ;
-- q      : distance estimée après chaque coup, lue en une passe sur le parent (Q* search, Agostinelli et al.,
-           2024), une évaluation par état du faisceau ;
-- value  : distance estimée de chaque enfant (DeepCubeA, CayleyPy), douze évaluations par état du faisceau ;
-- ac     : acteur-critique, coût V(p) - lam * log pi(a | p) pour l'enfant (p, a) : la valeur du parent compare
-           les états du faisceau entre eux, la politique choisit le coup ; un réseau à deux têtes (policy et
+Le classement des enfants dépend de la tête du réseau:
+- policy: log-probabilité cumulée du chemin (Takano, 2023), une évaluation par état du faisceau;
+- q: distance estimée après chaque coup, lue en une passe sur le parent (Q* search, Agostinelli et al.,
+           2024), une évaluation par état du faisceau;
+- value: distance estimée de chaque enfant (DeepCubeA, CayleyPy), douze évaluations par état du faisceau;
+- ac: acteur-critique, coût V(p) - lam * log pi(a | p) pour l'enfant (p, a): la valeur du parent compare
+           les états du faisceau entre eux, la politique choisit le coup; un réseau à deux têtes (policy et
            value), une évaluation par état du faisceau.
-Option bidirectionnelle : un second faisceau résout le cube inverse s⁻¹ avec le même réseau. Si z = s⁻¹ ∘ V
+Option bidirectionnelle: un second faisceau résout le cube inverse s⁻¹ avec le même réseau. Si z = s⁻¹ ∘ V
 est un de ses états, b = s ∘ z = V est l'état atteint depuis le cube résolu par les mouvements V, et la
-distance de b à s est celle de z au cube résolu : le réseau guide donc aussi la recherche partie de la
+distance de b à s est celle de z au cube résolu: le réseau guide donc aussi la recherche partie de la
 solution. Dès qu'un état avant s ∘ U coïncide avec un état arrière V, la solution est U suivie de l'inverse
 de V.
-Vues multiples : le même réseau cherche depuis plusieurs états équivalents à s, dont les solutions se ramènent à
-une solution de s de même longueur : l'inverse s⁻¹ et les conjugués g⁻¹ ∘ s ∘ g par les 48 symétries. Un réseau
+Vues multiples: le même réseau cherche depuis plusieurs états équivalents à s, dont les solutions se ramènent à
+une solution de s de même longueur: l'inverse s⁻¹ et les conjugués g⁻¹ ∘ s ∘ g par les 48 symétries. Un réseau
 qui n'est pas équivariant s'y trompe différemment, d'où une diversité sans entraînement supplémentaire. Soit un
 seul faisceau à plusieurs racines (solve, option views), soit un faisceau par vue dont on garde la solution la
 plus courte (solve_portfolio).
@@ -29,7 +29,7 @@ import torch
 
 
 class NetworkHeuristic:
-    """Classement des enfants par un réseau network_torch.ResMLP (conversion de symétrie comprise)."""
+    """classement des enfants par un réseau network_torch.ResMLP (conversion de symétrie comprise)."""
 
     def __init__(self, model, cube, mode=None, chunk=1 << 16, lam=2.0):
         self.model, self.cube, self.chunk, self.lam = model, cube, chunk, lam
@@ -40,16 +40,16 @@ class NetworkHeuristic:
         if missing:
             raise ValueError(f"le réseau n'a pas de tête {', '.join(missing)} (têtes : {heads})")
         self.canonical = config["canonical"]
-        self.encode = cube.encode if config["encoding"] == "pieces" else cube.encode_stickers
+        self.encode = cube.encode_stickers if config["encoding"] == "stickers" else cube.encode
         self.amp = cube.device.type == "cuda"
 
     def evaluations(self, n_states):
         """Nombre d'évaluations du réseau pour développer n_states états du faisceau."""
-        return 12 * n_states if self.mode == "value" else n_states
+        return self.cube.n_moves * n_states if self.mode == "value" else n_states
 
     @torch.no_grad()
     def head_outputs(self, states, heads):
-        """Sorties des têtes demandées (dict), en une passe du réseau par paquet, dans le repère d'origine."""
+        """sorties des têtes demandées (dict), en une passe du réseau par paquet, dans le repère d'origine."""
         results = {h: [] for h in heads}
         for start in range(0, len(states), self.chunk):
             s = states[start:start + self.chunk]
@@ -68,7 +68,7 @@ class NetworkHeuristic:
         return self.head_outputs(states, (head,))[head]
 
     def __call__(self, states, kids, cum):
-        """Retourne (coût de chaque enfant (N, 12), coût cumulé transmis aux enfants, évaluations)."""
+        """retourne (coût de chaque enfant (N, 12), coût cumulé transmis aux enfants, évaluations)."""
         n = len(states)
         if self.mode == "policy":
             child_cum = cum[:, None] - torch.log_softmax(self.outputs(states, "policy"), dim=1)
@@ -80,14 +80,14 @@ class NetworkHeuristic:
         if self.mode == "q":
             q = self.outputs(states, "q")
             return q, torch.zeros_like(q), n
-        h = self.outputs(kids.reshape(-1, 54), "value").reshape(n, 12)
-        return h, torch.zeros_like(h), 12 * n
+        h = self.outputs(kids.reshape(-1, kids.shape[-1]), "value").reshape(n, -1)
+        return h, torch.zeros_like(h), h.shape[1] * n
 
 
 def equivalent_views(cube, start, names):
     """
-    États équivalents à `start` et, pour chacun, la fonction qui ramène une de ses solutions à une solution de
-    start, de même longueur. Noms : id, inv (inverse s⁻¹), c<j> (conjugué par la symétrie j de 0 à 47),
+    états équivalents à `start` et, pour chacun, la fonction qui ramène une de ses solutions à une solution de
+    start, de même longueur. Noms: id, inv (inverse s⁻¹), c<j> (conjugué par la symétrie j de 0 à 47),
     ic<j> (conjugué de l'inverse).
     """
     inverse_action = cube.inverse_action.tolist()
@@ -119,10 +119,10 @@ def equivalent_views(cube, start, names):
 
 class _Beam:
     """
-    Un faisceau : états courants, coût cumulé, et pour chaque profondeur le parent et le coup de chaque état
+    un faisceau: états courants, coût cumulé, et pour chaque profondeur le parent et le coup de chaque état
     retenu (pour reconstruire les chemins). Les empreintes de tous les états visités sont gardées triées,
     avec un identifiant global (rang de visite) pour retrouver leur chemin. Il peut partir de plusieurs racines
-    (vues multiples) : un état atteint depuis deux racines est le même problème, il n'est gardé qu'une fois.
+    (vues multiples): un état atteint depuis deux racines est le même problème, il n'est gardé qu'une fois.
     """
 
     def __init__(self, cube, roots, key_roots):
@@ -136,7 +136,8 @@ class _Beam:
         keys = cube.state_hash(key_roots)
         order = torch.argsort(keys)
         self.seen_keys = keys[order]
-        self.seen_ids = torch.arange(self.n_roots, device=cube.device)[order]
+        # identifiants et parents en int32, coups en uint8: sur LRX, des centaines de niveaux à 2^20 états chacun
+        self.seen_ids = torch.arange(self.n_roots, device=cube.device, dtype=torch.int32)[order]
 
     def lookup(self, keys):
         """(masque des empreintes déjà visitées, identifiant global de l'état correspondant)."""
@@ -148,10 +149,10 @@ class _Beam:
         depth = bisect.bisect_right(self.offsets, gid) - 1
         if depth == 0:
             return [], gid
-        # une seule copie vers le CPU ; avec k racines, l'état d'identifiant g >= k a son parent et son coup en
+        # une seule copie vers le CPU; avec k racines, l'état d'identifiant g >= k a son parent et son coup en
         # position g - k
-        parents, moves = torch.stack([torch.cat(self.parents[:depth]), torch.cat(self.moves[:depth])]).to(
-            torch.int32).cpu().numpy()
+        parents, moves = torch.stack([torch.cat(self.parents[:depth]).to(torch.int32),
+                                      torch.cat(self.moves[:depth]).to(torch.int32)]).cpu().numpy()
         k = self.n_roots
         path = []
         while depth > 0:
@@ -161,14 +162,15 @@ class _Beam:
         return path[::-1], gid
 
     def child_path(self, j):
-        """(chemin, racine) de l'enfant j (indice dans le dernier développement : parent j // 12, coup j % 12)."""
-        moves, root = self.path(self.offsets[-1] + j // 12)
-        return moves + [j % 12], root
+        """(chemin, racine) de l'enfant j (indice dans le dernier développement: parent j // G, coup j % G)."""
+        G = self.cube.n_moves
+        moves, root = self.path(self.offsets[-1] + j // G)
+        return moves + [j % G], root
 
     def expand(self, heuristic, key_fn):
         kids = self.cube.children(self.states)
         cost, cum, evaluations = heuristic(self.states, kids, self.cum)
-        kids = kids.reshape(-1, 54)
+        kids = kids.reshape(-1, kids.shape[-1])
         keys = self.cube.state_hash(key_fn(kids))
         seen, _ = self.lookup(keys)
         return kids, keys, cost.reshape(-1).masked_fill(seen, float("inf")), cum.reshape(-1), evaluations
@@ -176,7 +178,7 @@ class _Beam:
     @staticmethod
     def candidates(keys, cost, width):
         """
-        Les `width` meilleurs enfants neufs et distincts, sans synchronisation : retourne leurs indices triés par
+        les `width` meilleurs enfants neufs et distincts, sans synchronisation: retourne leurs indices triés par
         coût (les invalides, doublons ou états déjà vus, à la fin) et leur nombre, encore sur le device.
         """
         order = torch.argsort(cost)
@@ -189,11 +191,11 @@ class _Beam:
         return best[:width], torch.isfinite(best_cost[:width]).sum()
 
     def select(self, kids, keys, cum, best):
-        """Le faisceau suivant : les enfants d'indices `best` (non vide)."""
-        self.parents.append(best // 12)
-        self.moves.append(best % 12)
+        """le faisceau suivant: les enfants d'indices `best` (non vide)."""
+        self.parents.append((best // self.cube.n_moves).to(torch.int32))
+        self.moves.append((best % self.cube.n_moves).to(torch.uint8))
         self.states, self.cum = kids[best], cum[best]
-        ids = torch.arange(self.size, self.size + len(best), device=keys.device)
+        ids = torch.arange(self.size, self.size + len(best), device=keys.device, dtype=torch.int32)
         self.offsets.append(self.size)
         self.size += len(best)
         all_keys = torch.cat([self.seen_keys, keys[best]])
@@ -211,9 +213,9 @@ def _to_host(*scalars):
 def solve(heuristic, start, width=512, max_depth=40, bidirectional=False, max_evaluations=None, max_checks=16,
           views=None):
     """
-    Cherche une solution pour l'état `start` (54,). Retourne un dict : solution (indices d'actions,
+    Cherche une solution pour l'état `start` (54,). Retourne un dict: solution (indices d'actions,
     vérifiée, ou None), evaluations (évaluations du réseau), depth (profondeur atteinte), time_s.
-    views : noms de vues (voir equivalent_views), racines d'un seul faisceau ; pas avec bidirectional.
+    views: noms de vues (voir equivalent_views), racines d'un seul faisceau; pas avec bidirectional.
     """
     if views and bidirectional:
         raise ValueError("les vues multiples et la recherche bidirectionnelle ne se combinent pas")
@@ -300,7 +302,7 @@ def solve(heuristic, start, width=512, max_depth=40, bidirectional=False, max_ev
 
 def solve_portfolio(heuristic, start, views, width=512, **options):
     """
-    Un faisceau par vue (chacun de largeur `width`, options de solve comprises) ; garde la solution la plus
+    Un faisceau par vue (chacun de largeur `width`, options de solve comprises); garde la solution la plus
     courte, ramenée à `start`. Les évaluations et le temps sont la somme de ceux des faisceaux.
     """
     cube = heuristic.cube

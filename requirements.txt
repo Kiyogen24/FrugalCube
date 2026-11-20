@@ -5,3 +5,10 @@ pycuber>=0.2.2        # 0.2.2
 
 # Tests
 pytest>=8             # 9.0.2
+
+# Figures de l'article (paper/scripts/make_figures.py)
+matplotlib>=3.8       # 3.9.2
+
+# Deux scripts d'expériences seulement : mémoire de pointe (mem_probe.py), répartition apprise (allocation2.py)
+psutil>=5.9           # 6.0.0
+scikit-learn>=1.4     # 1.8.0

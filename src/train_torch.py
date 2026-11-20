@@ -1,20 +1,22 @@
 """
 Entraînement PyTorch (CPU ou GPU) à budget de temps fixe, avec des checkpoints réguliers pour tracer la qualité
-en fonction du temps d'entraînement. Les données sont toujours neuves et générées sur le device : chaque pas
+en fonction du temps d'entraînement. Les données sont toujours neuves et générées sur le device: chaque pas
 tire --walks mélanges de --length coups et utilise tous leurs préfixes.
 
-Objectifs (têtes du réseau, combinables avec --heads) :
-- policy : auto-supervisé, inverse du dernier coup du mélange (notre méthode, aussi celle de Takano) ;
-- value  : régression de la longueur du mélange (principe de CayleyPy) ;
-- q      : Q-learning, cible de Bellman 1 + min_a' Q_cible(enfant, a') (0 pour le cube résolu), bornée par la
-           longueur du mélange ; réseau cible recopié tous les --target-every pas.
-Options :
-- --canonical : états ramenés à leur forme canonique parmi leurs 48 symétriques ;
-- --per : replay priorisé (Schaul et al., 2016) : une part --per-fraction de chaque lot est tirée d'un buffer,
+Objectifs (têtes du réseau, combinables avec --heads):
+- policy: auto-supervisé, inverse du dernier coup du mélange (notre méthode, aussi celle de Takano);
+- value: régression de la longueur du mélange (principe de CayleyPy);
+- q: Q-learning, cible de Bellman 1 + min_a' Q_cible(enfant, a') (0 pour le cube résolu), bornée par la
+           longueur du mélange; réseau cible recopié tous les --target-every pas;
+- cohérence des chemins (--pcl-weight, têtes policy et value): V(s) = 1 + V(s · a) + alpha log pi(a | s) le
+  long des mélanges retournés (Path Consistency Learning), sans évaluation supplémentaire du réseau.
+Options:
+- --canonical: états ramenés à leur forme canonique parmi leurs 48 symétriques;
+- --per: replay priorisé (Schaul et al., 2016): une part --per-fraction de chaque lot est tirée d'un buffer,
   avec une probabilité qui croît avec la perte de l'exemple à son dernier passage, corrigée par des poids
   d'importance.
 
-Usage :
+Usage:
     python src/train_torch.py --minutes 90 --heads policy --out-dir runs/auto_supervise
     python src/train_torch.py --minutes 90 --heads value --encoding stickers --out-dir runs/cayleypy
 """
@@ -33,7 +35,7 @@ import network_torch as nt
 
 
 class PrioritizedBuffer:
-    """Buffer circulaire sur le device : états, étiquettes, profondeurs et priorités."""
+    """buffer circulaire sur le device: états, étiquettes, profondeurs et priorités."""
 
     def __init__(self, capacity, device, alpha, beta):
         self.capacity, self.alpha, self.beta = capacity, alpha, beta
@@ -63,7 +65,7 @@ class PrioritizedBuffer:
 @torch.no_grad()
 def q_targets(target, cube, encode, states, labels, depths, canonical, amp, chunk=1 << 16):
     """
-    Cibles de Bellman (N, 12) : 1 + distance estimée de chaque enfant, bornées par le mélange (un enfant est
+    Cibles de Bellman (N, 12): 1 + distance estimée de chaque enfant, bornées par le mélange (un enfant est
     à au plus depth + 1 coups, et l'inverse du dernier coup ramène à au plus depth - 1 coups).
     """
     kids = cube.children(states).reshape(-1, 54)
@@ -80,8 +82,22 @@ def q_targets(target, cube, encode, states, labels, depths, canonical, amp, chun
     return torch.minimum(1.0 + distance, bound)
 
 
+def path_consistency(values, logp, length, alpha):
+    """
+    Résidus de cohérence des chemins (Path Consistency Learning, Nachum et al., 2017) le long des mélanges.
+    Avec un coût de 1 par coup et une température alpha, le couple optimal (V, pi) vérifie pour tout coup a:
+    V(s) = 1 + V(s · a) + alpha * log pi(a | s). Les mélanges retournés en fournissent les transitions: depuis
+    l'état à k coups, l'inverse du dernier coup ramène à l'état à k - 1 coups (le cube résolu pour k = 1, de
+    valeur 0). values et logp (log pi de cet inverse) sont rangés comme self_supervised_batch: profondeur par
+    profondeur, (length * n,). Retourne les résidus (length * n,).
+    """
+    v = values.reshape(length, -1)
+    v_prev = torch.cat([torch.zeros_like(v[:1]), v[:-1]])
+    return (v - 1.0 - v_prev - alpha * logp.reshape(length, -1)).reshape(-1)
+
+
 class Trainer:
-    """Réseau, optimiseur et réseau cible ; un appel à step fait un pas de gradient sur un lot."""
+    """Réseau, optimiseur et réseau cible; un appel à step fait un pas de gradient sur un lot."""
 
     def __init__(self, net, cube, args):
         self.net, self.cube, self.args = net, cube, args
@@ -92,16 +108,20 @@ class Trainer:
         self.target = copy.deepcopy(net).eval().requires_grad_(False) if "q" in self.heads else None
         self.amp = cube.device.type == "cuda" or getattr(args, "bf16", False)
         self.freeze_body = getattr(args, "freeze_body", False)
+        if getattr(args, "pcl_weight", 0) and not {"policy", "value"} <= set(self.heads):
+            raise ValueError("la cohérence des chemins demande les têtes policy et value")
         self.steps = 0
 
     def set_lr(self, lr):
         for group in self.optimizer.param_groups:
             group["lr"] = lr
 
-    def step(self, states, labels, depths, weights=None, n_metrics=None):
+    def step(self, states, labels, depths, weights=None, n_metrics=None, path_length=None):
         """
         states (N, 54), labels (coup à jouer), depths (borne supérieure de la distance), weights (poids
         d'importance, optionnels). Retourne (perte par exemple, métriques sur les n_metrics premiers exemples).
+        path_length: longueur des mélanges si les n_metrics premiers exemples sont un lot de
+        self_supervised_batch (nécessaire à la cohérence des chemins, --pcl-weight).
         """
         args, cube = self.args, self.cube
         n_metrics = n_metrics or len(states)
@@ -110,7 +130,7 @@ class Trainer:
             labels = cube.action_perm[k, labels]
         self.model.train()
         if self.freeze_body:
-            self.net.body.eval()            # tronc figé : BatchNorm avec ses statistiques apprises
+            self.net.body.eval()            # tronc figé: BatchNorm avec ses statistiques apprises
         with torch.autocast(cube.device.type, dtype=torch.bfloat16, enabled=self.amp):
             out = self.model(self.encode(states))
         per_example = torch.zeros(len(states), device=states.device)
@@ -130,6 +150,14 @@ class Trainer:
             se_q = ((out["q"].float() - y) ** 2).mean(dim=1)
             per_example = per_example + args.q_weight * se_q
             metrics["q_loss"] = se_q[:n_metrics].mean().detach()
+        if getattr(args, "pcl_weight", 0) and path_length:
+            logp = -ce[:n_metrics]
+            if args.pcl_critic_only:
+                logp = logp.detach()        # seule la valeur apprend la cohérence, la politique est inchangée
+            residual = path_consistency(out["value"].float()[:n_metrics], logp, path_length, args.pcl_alpha)
+            pcl = torch.cat([residual ** 2, residual.new_zeros(len(states) - n_metrics)])
+            per_example = per_example + args.pcl_weight * pcl
+            metrics["pcl_loss"] = (residual ** 2).mean().detach()
         loss = (per_example * weights).mean() if weights is not None else per_example.mean()
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -141,7 +169,7 @@ class Trainer:
 
 
 class RunLog:
-    """Journal JSONL périodique et checkpoints réguliers d'un entraînement à budget de temps."""
+    """journal JSONL périodique et checkpoints réguliers d'un entraînement à budget de temps."""
 
     def __init__(self, net, args):
         self.net, self.args = net, args
@@ -165,7 +193,7 @@ class RunLog:
                 examples=self.examples, args=vars(self.args))
 
     def record(self, steps, n_examples, metrics, extra=None):
-        """À appeler après chaque pas : cumule les métriques, écrit le journal et les checkpoints à échéance."""
+        """À appeler après chaque pas: cumule les métriques, écrit le journal et les checkpoints à échéance."""
         self.examples += n_examples
         for key, value in metrics.items():
             self.sums[key] = self.sums.get(key, 0.0) + value
@@ -189,6 +217,8 @@ class RunLog:
 def add_training_arguments(parser):
     """Options communes à train_torch et expert_iteration_torch."""
     parser.add_argument("--minutes", type=float, required=True, help="budget de temps total (génération comprise)")
+    parser.add_argument("--max-examples", type=int, default=0,
+                        help="arrêt à ce nombre d'exemples, avant le budget de temps (0 : budget de temps seul)")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--heads", default="policy", help="têtes, séparées par des virgules : policy,value,q")
     parser.add_argument("--encoding", choices=list(nt.INPUT_SIZES), default="pieces")
@@ -202,9 +232,16 @@ def add_training_arguments(parser):
     parser.add_argument("--freeze-body", action="store_true",
                         help="avec --init : tronc et têtes du checkpoint figés, seules les têtes ajoutées apprennent")
     parser.add_argument("--bf16", action="store_true", help="précision bf16 aussi sur CPU (toujours sur GPU)")
+    parser.add_argument("--pcl-weight", type=float, default=0.0,
+                        help="poids de la cohérence des chemins (têtes policy et value) le long des mélanges")
+    parser.add_argument("--pcl-alpha", type=float, default=1.0, help="température de la cohérence des chemins")
+    parser.add_argument("--pcl-critic-only", action="store_true",
+                        help="la cohérence n'entraîne que la valeur (politique tenue pour fixe)")
     parser.add_argument("--init", help="checkpoint de départ (son architecture remplace --hidden/--width/...)")
     parser.add_argument("--walks", type=int, default=1000, help="mélanges par pas (lot = walks x length)")
     parser.add_argument("--length", type=int, default=26)
+    parser.add_argument("--gen-factor", type=int, default=1,
+                        help="mélanges générés par appel, en multiples de --walks, découpés en lots de --walks")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant",
                         help="cosine : décroissance selon la fraction du budget de temps écoulée")
@@ -219,8 +256,136 @@ def add_training_arguments(parser):
     parser.add_argument("--seed", type=int, default=0)
 
 
+def split_batches(states, labels, depths, length, k):
+    """
+    découpe un lot de self_supervised_batch fait de k·n mélanges en k lots de n mélanges, chacun dans la même
+    disposition (préfixe par préfixe) qu'un lot de n mélanges: la recette d'entraînement ne change pas, mais
+    la génération, limitée par le lancement des noyaux sur GPU, se fait en un appel pour k pas.
+    """
+    split = lambda t: [part.reshape(-1, *t.shape[1:]) for part in t.reshape(length, k, -1, *t.shape[1:]).unbind(1)]
+    return list(zip(split(states), split(labels), split(depths)))
+
+
+def focus_keep(length, focus, keep):
+    """Probabilités de garder un préfixe de chaque longueur: 1 dans l'intervalle focus = (lo, hi), keep ailleurs."""
+    lo, hi = focus
+    p = torch.full((length,), keep)
+    p[lo - 1:hi] = 1.0
+    return p
+
+
+class LengthBandit:
+    """
+    Choix des longueurs de mélange par le progrès d'apprentissage (programme appris, Graves et al., 2017). La perte
+    de politique de chaque longueur est moyennée par fenêtre de `every` pas, puis suivie par une moyenne glissante
+    rapide et une lente; le progrès est leur écart quand la perte baisse. La probabilité de garder un préfixe de
+    longueur k croît avec ce progrès (lissé sur les longueurs voisines), avec le plancher `floor`, et sert aux lots
+    suivants de focused_batches. Une synchronisation par fenêtre.
+    """
+
+    def __init__(self, length, device, every=50, floor=0.25, fast=0.5, slow=0.1, alp=False, horizon=8, top=8,
+                 inertia=0.5):
+        self.length, self.every, self.floor, self.fast, self.slow = length, every, floor, fast, slow
+        self.alp, self.horizon, self.top, self.inertia = alp, horizon, top, inertia
+        self.keep = torch.ones(length)
+        self.sums = torch.zeros(length, device=device)
+        self.counts = torch.zeros(length, device=device)
+        self.steps, self.loss_fast, self.loss_slow = 0, None, None
+        self.history = []
+
+    def observe(self, loss, depths):
+        """
+        version 1: perte mesurée sur les lots d'entraînement. loss: perte de politique par exemple; depths:
+        longueur du préfixe de chaque exemple (1 à length). Ces lots suivent les choix du bandit, et la BatchNorm les
+        normalise ensemble: la perte d'une longueur bouge quand la composition change, ce qui fait osciller le choix.
+        """
+        self.sums += torch.bincount(depths - 1, weights=loss.detach().float(), minlength=self.length)
+        self.counts += torch.bincount(depths - 1, minlength=self.length)
+        self.steps += 1
+        if self.steps % self.every:
+            return
+        mean = (self.sums / self.counts.clamp(min=1)).cpu()
+        self.sums.zero_()
+        self.counts.zero_()
+        self.update(mean)
+
+    def update(self, mean):
+        """mean: perte moyenne de chaque longueur sur la dernière fenêtre (CPU)."""
+        if self.alp:
+            return self.update_alp(mean)
+        if self.loss_fast is None:
+            self.loss_fast, self.loss_slow = mean.clone(), mean.clone()
+            return
+        self.loss_fast += self.fast * (mean - self.loss_fast)
+        self.loss_slow += self.slow * (mean - self.loss_slow)
+        progress = (self.loss_slow - self.loss_fast).clamp(min=0)
+        progress = F.conv1d(progress[None, None], torch.tensor([[[0.25, 0.5, 0.25]]]), padding=1)[0, 0]
+        if progress.max() > 0:
+            self.keep = self.floor + (1 - self.floor) * progress / progress.max()
+
+    def update_alp(self, mean):
+        """
+        version 3 (alp): progrès absolu, pente d'une régression linéaire sur les `horizon` dernières mesures (une
+        hausse compte comme une baisse: oubli), lissé sur les longueurs voisines. Allocation douce: une longueur
+        est gardée avec la probabilité 1 si son progrès atteint la moyenne des `top` plus forts, proportionnellement
+        en dessous, jamais sous le plancher; inertie entre deux mises à jour. Les versions 1 et 2 normalisaient par
+        le maximum, ce qui amplifiait le bruit quand tous les progrès étaient faibles.
+        """
+        self.history = (self.history + [mean.clone().float()])[-self.horizon:]
+        if len(self.history) < self.horizon:
+            return
+        y = torch.stack(self.history)
+        t = torch.arange(self.horizon, dtype=y.dtype)
+        t = t - t.mean()
+        progress = ((t[:, None] * (y - y.mean(0))).sum(0) / (t * t).sum()).abs()
+        progress = F.conv1d(progress[None, None], torch.tensor([[[0.25, 0.5, 0.25]]]), padding=1)[0, 0]
+        ref = progress.topk(min(self.top, self.length)).values.mean()
+        if ref > 0:
+            target = self.floor + (1 - self.floor) * (progress / ref).clamp(max=1.0)
+            self.keep = self.inertia * self.keep + (1 - self.inertia) * target
+
+
+@torch.no_grad()
+def probe_losses(trainer, probe, length, signal="ce", chunk=1 << 18):
+    """
+    Version 2 du bandit: perte de politique de chaque longueur sur un jeu fixe de mélanges uniformes, réseau en mode
+    évaluation (statistiques apprises de la BatchNorm); indépendante des choix du bandit. signal="acc": part des
+    étiquettes classées premières au lieu de la perte (la précision aux longueurs moyennes classe les réseaux comme
+    la recherche, runs/cpu10/proxy.py; la perte aux grandes longueurs suit le calibrage, non la recherche).
+    """
+    states, labels, depths = probe
+    trainer.model.eval()
+    per = []
+    for s in range(0, len(states), chunk):   # par paquets: un grand jeu (100 000 mélanges, 2,6M états) tient en mémoire
+        with torch.autocast(trainer.cube.device.type, dtype=torch.bfloat16, enabled=trainer.amp):
+            logits = trainer.model(trainer.encode(states[s:s + chunk]))["policy"].float()
+        if signal == "acc":
+            per.append((logits.argmax(1) == labels[s:s + chunk]).float())
+        else:
+            per.append(F.cross_entropy(logits, labels[s:s + chunk], reduction="none"))
+    per = torch.cat(per)
+    mean = torch.bincount(depths - 1, weights=per, minlength=length) / torch.bincount(depths - 1, minlength=length)
+    return mean.cpu()
+
+
+def focused_batches(cube, walks, length, k, p, generator):
+    """
+    Environ k lots de walks·length exemples où un préfixe de longueur j n'est gardé qu'avec la probabilité p[j - 1]:
+    plus d'exemples aux longueurs où le réseau apprend encore, à taille de lot égale. Les exemples gardés sont
+    mélangés; une seule synchronisation par appel (le compte des exemples gardés).
+    """
+    p = p.to(cube.device)
+    n_walks = math.ceil(walks * k / float(p.mean()) * 1.02)
+    states, labels, depths = cube.self_supervised_batch(n_walks, length, generator)
+    kept = torch.rand(len(depths), device=cube.device, generator=generator) < p[depths - 1]
+    idx = kept.nonzero().squeeze(1)
+    idx = idx[torch.randperm(len(idx), device=cube.device, generator=generator)]
+    n = walks * length
+    return [(states[b], labels[b], depths[b]) for b in idx[:len(idx) // n * n].split(n)]
+
+
 def setup(args):
-    """Retourne (cube, générateur aléatoire, réseau) sur le device demandé."""
+    """retourne (cube, générateur aléatoire, réseau) sur le device demandé."""
     torch.manual_seed(args.seed)
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device(args.device)
@@ -256,7 +421,25 @@ def main():
     parser.add_argument("--per-capacity", type=int, default=2_000_000)
     parser.add_argument("--per-alpha", type=float, default=0.6)
     parser.add_argument("--per-beta", type=float, default=0.4)
+    parser.add_argument("--focus", help="longueurs privilégiées, par ex. 9-18 : les autres préfixes ne sont gardés "
+                                        "qu'avec la probabilité --focus-keep, à taille de lot égale")
+    parser.add_argument("--focus-keep", type=float, default=0.25)
+    parser.add_argument("--bandit", action="store_true",
+                        help="longueurs choisies par le progrès d'apprentissage (LengthBandit), plancher --focus-keep")
+    parser.add_argument("--bandit-every", type=int, default=50, help="pas par fenêtre du bandit")
+    parser.add_argument("--bandit-probe", type=int, default=0,
+                        help="mélanges du jeu fixe où le bandit mesure le progrès (0 : sur les lots d'entraînement)")
+    parser.add_argument("--bandit-alp", action="store_true",
+                        help="version 3 : progrès absolu sur --bandit-horizon mesures, allocation douce, inertie")
+    parser.add_argument("--bandit-signal", choices=["ce", "acc"], default="ce",
+                        help="mesure du jeu fixe : perte de politique ou précision de l'étiquette")
+    parser.add_argument("--bandit-horizon", type=int, default=8)
+    parser.add_argument("--bandit-top", type=int, default=8)
+    parser.add_argument("--bandit-inertia", type=float, default=0.5)
     args = parser.parse_args()
+    if args.bandit_signal == "acc" and not args.bandit_probe:
+        raise ValueError("--bandit-signal acc suppose un jeu fixe (--bandit-probe)")
+    focus = focus_keep(args.length, tuple(map(int, args.focus.split("-"))), args.focus_keep) if args.focus else None
 
     cube, generator, net = setup(args)
     trainer = Trainer(net, cube, args)
@@ -267,22 +450,45 @@ def main():
           f"lot {n_fresh} + {n_replay} rejoués", flush=True)
 
     log = RunLog(net, args)
-    while log.elapsed() < log.budget:
+    bandit = LengthBandit(args.length, cube.device, args.bandit_every, args.focus_keep, alp=args.bandit_alp,
+                          horizon=args.bandit_horizon, top=args.bandit_top,
+                          inertia=args.bandit_inertia) if args.bandit else None
+    probe = None
+    if bandit and args.bandit_probe:
+        probe = cube.self_supervised_batch(args.bandit_probe, args.length,
+                                           torch.Generator(cube.device).manual_seed(args.seed + 1))
+    pool = []
+    while log.elapsed() < log.budget and not (args.max_examples and log.examples >= args.max_examples):
         trainer.set_lr(log.lr())
-        states, labels, depths = cube.self_supervised_batch(args.walks, args.length, generator)
+        if not pool and (focus is not None or bandit):
+            pool = focused_batches(cube, args.walks, args.length, args.gen_factor,
+                                   bandit.keep if bandit else focus, generator)
+        elif not pool:
+            pool = split_batches(*cube.self_supervised_batch(args.walks * args.gen_factor, args.length, generator),
+                                 args.length, args.gen_factor)
+        states, labels, depths = pool.pop(0)
         weights = None
         if buffer is not None and buffer.size >= n_replay:
             idx, r_states, r_labels, r_depths, r_weights = buffer.sample(n_replay, generator)
             states, labels, depths = torch.cat([states, r_states]), torch.cat([labels, r_labels]), torch.cat([depths, r_depths])
             weights = torch.cat([torch.ones(n_fresh, device=cube.device), r_weights])
         # métriques sur les exemples neufs seulement, comparables avec ou sans replay
-        per_example, metrics = trainer.step(states, labels, depths, weights, n_metrics=n_fresh)
+        per_example, metrics = trainer.step(states, labels, depths, weights, n_metrics=n_fresh,
+                                            path_length=args.length)
         if buffer is not None:
             priority = per_example + 1e-3
             if weights is not None:
                 buffer.update(idx, priority[n_fresh:])
             buffer.add(states[:n_fresh], labels[:n_fresh], depths[:n_fresh], priority[:n_fresh])
-        log.record(trainer.steps, len(states), metrics)
+        extra = None
+        if bandit and probe is not None:
+            if trainer.steps % args.bandit_every == 0:
+                bandit.update(probe_losses(trainer, probe, args.length, args.bandit_signal))
+        elif bandit:
+            bandit.observe(per_example, depths)
+        if bandit:
+            extra = {"keep": [round(float(x), 2) for x in bandit.keep]}
+        log.record(trainer.steps, len(states), metrics, extra)
     log.save("final.pt", trainer.steps)
     print(f"Terminé : {trainer.steps} pas, {log.examples} exemples, {log.elapsed():.0f} s", flush=True)
 

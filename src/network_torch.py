@@ -1,10 +1,10 @@
 """
-Réseau PyTorch : MLP résiduel, l'architecture de DeepCubeA (reprise par Takano, et en plus petit par CayleyPy),
-avec des têtes au choix :
-- policy : 12 logits, le coup à jouer (appris sur l'inverse du dernier coup du mélange) ;
-- value  : distance estimée au cube résolu, en coups ;
-- q      : distance estimée après chacun des 12 coups (Q-learning, « Q* search » d'Agostinelli et al., 2024).
-Pas de dropout ni de régularisation L2 : les données sont toujours neuves, il n'y a pas de surapprentissage.
+réseau PyTorch: MLP résiduel, l'architecture de DeepCubeA (reprise par Takano, et en plus petit par CayleyPy),
+avec des têtes au choix:
+- policy: 12 logits, le coup à jouer (appris sur l'inverse du dernier coup du mélange);
+- value: distance estimée au cube résolu, en coups;
+- q: distance estimée après chacun des 12 coups (Q-learning, "Q* search" d'Agostinelli et al., 2024).
+Pas de dropout ni de régularisation L2: les données sont toujours neuves, il n'y a pas de surapprentissage.
 """
 import torch
 from torch import nn
@@ -25,30 +25,37 @@ class ResidualBlock(nn.Module):
 
 class ResMLP(nn.Module):
     """
-    encoding : "pieces" (one-hot 480 de cube_torch.encode) ou "stickers" (one-hot 324 de encode_stickers) ;
-    canonical : le réseau attend des états ramenés à leur forme canonique (symétries), et ses sorties par
-    action sont exprimées dans ce repère ;
-    value_detach : la tête value apprend sur les caractéristiques du tronc sans les modifier (pas de gradient
-    vers le tronc), pour qu'une tête value ajoutée ne dégrade pas la politique ;
-    value_hidden : si > 0, la tête value est un petit MLP (une couche cachée de cette taille) au lieu d'une
+    encoding: "pieces" (one-hot 480 de cube_torch.encode) ou "stickers" (one-hot 324 de encode_stickers);
+    canonical: le réseau attend des états ramenés à leur forme canonique (symétries), et ses sorties par
+    action sont exprimées dans ce repère;
+    value_detach: la tête value apprend sur les caractéristiques du tronc sans les modifier (pas de gradient
+    vers le tronc), pour qu'une tête value ajoutée ne dégrade pas la politique;
+    value_hidden: si > 0, la tête value est un petit MLP (une couche cachée de cette taille) au lieu d'une
     couche linéaire.
+    hidden = 0: pas de première couche large, l'entrée va directement à la couche de taille width (avec
+    blocks = 0, un MLP à une seule couche cachée, le plus petit réseau de CayleyPy).
     Ces réglages voyagent avec les poids dans les checkpoints.
     """
 
     def __init__(self, encoding="pieces", hidden=5000, width=1000, blocks=4, heads=("policy",), canonical=False,
-                 value_detach=False, value_hidden=0):
+                 value_detach=False, value_hidden=0, n_inputs=None, n_moves=12):
         super().__init__()
+        # n_inputs, n_moves: autres puzzles (perm_torch); absents des anciens checkpoints, d'où les défauts du cube
         self.config = dict(encoding=encoding, hidden=hidden, width=width, blocks=blocks, heads=list(heads),
                            canonical=canonical, value_detach=value_detach, value_hidden=value_hidden)
+        if n_inputs is not None or n_moves != 12:
+            self.config.update(n_inputs=n_inputs, n_moves=n_moves)
+        size_in = n_inputs or INPUT_SIZES[encoding]
+        head_sizes = dict(HEAD_SIZES, policy=n_moves, q=n_moves)
+        first = ([nn.Linear(size_in, hidden), nn.BatchNorm1d(hidden), nn.ReLU()] if hidden else [])
         self.body = nn.Sequential(
-            nn.Linear(INPUT_SIZES[encoding], hidden), nn.BatchNorm1d(hidden), nn.ReLU(),
-            nn.Linear(hidden, width), nn.BatchNorm1d(width), nn.ReLU(),
+            *first, nn.Linear(hidden or size_in, width), nn.BatchNorm1d(width), nn.ReLU(),
             *[ResidualBlock(width) for _ in range(blocks)])
 
         def head(h):
             if h == "value" and value_hidden:
                 return nn.Sequential(nn.Linear(width, value_hidden), nn.ReLU(), nn.Linear(value_hidden, 1))
-            return nn.Linear(width, HEAD_SIZES[h])
+            return nn.Linear(width, head_sizes[h])
 
         self.heads = nn.ModuleDict({h: head(h) for h in heads})
 
@@ -66,7 +73,7 @@ class ResMLP(nn.Module):
 
 def save(model, path, **metadata):
     """
-    Enregistre la configuration, les poids et des métadonnées (temps d'entraînement, exemples vus...) ; les
+    Enregistre la configuration, les poids et des métadonnées (temps d'entraînement, exemples vus...); les
     métadonnées doivent être des types simples (nombres, chaînes, listes, dictionnaires, tenseurs).
     """
     model = getattr(model, "_orig_mod", model)   # modèle passé par torch.compile
@@ -74,7 +81,7 @@ def save(model, path, **metadata):
 
 
 def load(path, device="cpu"):
-    """Retourne (modèle en mode évaluation, métadonnées du checkpoint)."""
+    """retourne (modèle en mode évaluation, métadonnées du checkpoint)."""
     checkpoint = torch.load(path, map_location=device, weights_only=True)   # pas de pickle arbitraire
     model = ResMLP(**checkpoint.pop("config")).to(device)
     model.load_state_dict(checkpoint.pop("state_dict"))

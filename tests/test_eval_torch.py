@@ -11,7 +11,7 @@ CUBE = ct.TorchCube("cpu")
 
 
 class Uniform:
-    """Heuristique constante : le faisceau devient un parcours en largeur s'il est assez large."""
+    """heuristique constante: le faisceau devient un parcours en largeur s'il est assez large."""
     cube, mode = CUBE, "policy"
 
     def evaluations(self, n):

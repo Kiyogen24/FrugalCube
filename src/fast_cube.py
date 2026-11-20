@@ -2,11 +2,11 @@
 Cube vectorisé avec numpy, pour la recherche par lots.
 
 Un état est la permutation des 54 facettes, dans l'ordre Kociemba (faces U, R, F, D, L, B, lues ligne par
-ligne comme get_face de pycuber) : state[i] est l'indice, dans le cube résolu, de la facette qui se trouve
+ligne comme get_face de pycuber): state[i] est l'indice, dans le cube résolu, de la facette qui se trouve
 maintenant en position i. Un lot d'états est un tableau (N, 54).
 
 Les permutations des mouvements et la position des pièces sont déduites de pycuber en suivant chaque
-facette : le module est cohérent par construction avec Cube.py (mêmes mouvements, même ordre d'actions,
+facette: le module est cohérent par construction avec Cube.py (mêmes mouvements, même ordre d'actions,
 même encodage 480 que RubiksCube.get_matrix_state), ce que vérifient les tests.
 
 Contrairement à pycuber, cette représentation donne directement l'inverse d'un état (argsort), utilisé par
@@ -37,7 +37,7 @@ def _read_tags(cube):
 
 
 def _build_tables():
-    # Mouvements : après le mouvement, la facette en position i vient de la position moves[a, i]
+    # mouvements: après le mouvement, la facette en position i vient de la position moves[a, i]
     moves = []
     for action in ACTIONS:
         cube = _tagged_cube()
@@ -52,7 +52,7 @@ def _build_tables():
     corner_idx = np.array([[slots[frozenset(s)][f] for f in s] for s in CORNER_SLOTS])
     edge_idx = np.array([[slots[frozenset(s)][f] for f in s] for s in EDGE_SLOTS])
 
-    # Tables couleur -> colonne one-hot (même définition de pièce et d'orientation que Cube.py) :
+    # tables couleur -> colonne one-hot (même définition de pièce et d'orientation que Cube.py):
     # la pièce k est celle de l'emplacement k dans le cube résolu, sa couleur de référence est celle
     # de la première face de son emplacement, et l'orientation est la position de cette couleur.
     face_id = {f: i for i, f in enumerate(FACES)}
@@ -76,8 +76,8 @@ _HASH_WEIGHTS = np.random.default_rng(12345).integers(1, 2 ** 63, size=54, dtype
 
 def _build_symmetries():
     """
-    Les 48 symétries du cube (24 rotations du cube entier, avec ou sans miroir) comme permutations des
-    54 positions, et la correspondance des actions : action_perm[k, a] est l'action qui joue, dans l'état
+    les 48 symétries du cube (24 rotations du cube entier, avec ou sans miroir) comme permutations des
+    54 positions, et la correspondance des actions: action_perm[k, a] est l'action qui joue, dans l'état
     conjugué par la symétrie k, le rôle de l'action a dans l'état d'origine.
     """
     def rotation(name):
@@ -85,7 +85,7 @@ def _build_symmetries():
         cube(name)
         return _read_tags(cube)
 
-    # Miroir gauche-droite : R et L échangées, colonnes de chaque face inversées
+    # miroir gauche-droite: R et L échangées, colonnes de chaque face inversées
     mirror = np.empty(54, dtype=np.int16)
     for f, face in enumerate(FACES):
         target = FACES.index({"R": "L", "L": "R"}.get(face, face))
@@ -122,24 +122,24 @@ SYMMETRIES, SYMMETRIES_INV, ACTION_PERM = _build_symmetries()
 
 
 def apply_actions(states, actions):
-    """Applique une action par état : states (N, 54), actions (N,) -> (N, 54)."""
+    """Applique une action par état: states (N, 54), actions (N,) -> (N, 54)."""
     return np.take_along_axis(states, MOVES[actions], axis=1)
 
 
 def apply_sequence(state, actions):
-    """Applique une séquence d'actions (indices) à un seul état (54,)."""
+    """applique une séquence d'actions (indices) à un seul état (54,)."""
     for a in actions:
         state = state[MOVES[a]]
     return state
 
 
 def children(states):
-    """Les 12 enfants de chaque état : (N, 54) -> (N, 12, 54)."""
+    """les 12 enfants de chaque état: (N, 54) -> (N, 12, 54)."""
     return states[:, MOVES]
 
 
 def inverse(states):
-    """Inverse de chaque état (élément inverse dans le groupe du cube)."""
+    """inverse de chaque état (élément inverse dans le groupe du cube)."""
     return np.argsort(states, axis=-1).astype(states.dtype)
 
 
@@ -153,7 +153,7 @@ def is_solved(states):
 
 
 def state_hash(states):
-    """Empreinte 64 bits d'états (N, 54) ; les collisions, très improbables, sont écartées par vérification."""
+    """Empreinte 64 bits d'états (N, 54); les collisions, très improbables, sont écartées par vérification."""
     return (states.astype(np.uint64) * _HASH_WEIGHTS).sum(axis=-1)
 
 
@@ -173,15 +173,15 @@ def encode(states):
 
 
 def conjugates(states):
-    """Les 48 états symétriques g⁻¹ ∘ s ∘ g de chaque état : (N, 54) -> (N, 48, 54)."""
+    """les 48 états symétriques g⁻¹ ∘ s ∘ g de chaque état: (N, 54) -> (N, 48, 54)."""
     moved = states[:, SYMMETRIES]                                   # s[g[i]]
     return SYMMETRIES_INV[np.arange(len(SYMMETRIES))[None, :, None], moved]
 
 
 def canonicalize(states, chunk=20000):
     """
-    Forme canonique de chaque état : celui de ses 48 symétriques qui a la plus petite empreinte (identique
-    pour tous les états d'une même classe de symétrie). Retourne (états canoniques, indice de symétrie k) ;
+    forme canonique de chaque état: celui de ses 48 symétriques qui a la plus petite empreinte (identique
+    pour tous les états d'une même classe de symétrie). Retourne (états canoniques, indice de symétrie k);
     une action a sur l'état d'origine correspond à l'action ACTION_PERM[k, a] sur l'état canonique.
     """
     canonical = np.empty_like(states)

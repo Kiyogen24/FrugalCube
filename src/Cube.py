@@ -3,13 +3,13 @@ import random
 import numpy as np
 
 
-# Emplacements des coins : la première face est toujours U ou D (face de référence pour l'orientation)
+# emplacements des coins: la première face est toujours U ou D (face de référence pour l'orientation)
 CORNER_SLOTS = [
     ('U', 'R', 'F'), ('U', 'F', 'L'), ('U', 'L', 'B'), ('U', 'B', 'R'),
     ('D', 'F', 'R'), ('D', 'L', 'F'), ('D', 'B', 'L'), ('D', 'R', 'B'),
 ]
 
-# Emplacements des arêtes : la première face est U/D, ou F/B pour la couronne du milieu
+# emplacements des arêtes: la première face est U/D, ou F/B pour la couronne du milieu
 EDGE_SLOTS = [
     ('U', 'R'), ('U', 'F'), ('U', 'L'), ('U', 'B'),
     ('D', 'R'), ('D', 'F'), ('D', 'L'), ('D', 'B'),
@@ -29,7 +29,7 @@ def _read_cubies(pycuber_cube):
 _SOLVED_CUBIES = _read_cubies(pc.Cube())
 CORNER_PIECES = {frozenset(_SOLVED_CUBIES[frozenset(slot)].values()): i for i, slot in enumerate(CORNER_SLOTS)}
 EDGE_PIECES = {frozenset(_SOLVED_CUBIES[frozenset(slot)].values()): i for i, slot in enumerate(EDGE_SLOTS)}
-# Couleur qui se trouve sur la face de référence de l'emplacement d'origine de chaque pièce
+# couleur qui se trouve sur la face de référence de l'emplacement d'origine de chaque pièce
 CORNER_REF_COLOUR = [_SOLVED_CUBIES[frozenset(slot)][slot[0]] for slot in CORNER_SLOTS]
 EDGE_REF_COLOUR = [_SOLVED_CUBIES[frozenset(slot)][slot[0]] for slot in EDGE_SLOTS]
 
@@ -37,13 +37,13 @@ SOLVED_KOCIEMBA_STRING = "U" * 9 + "R" * 9 + "F" * 9 + "D" * 9 + "L" * 9 + "B" *
 
 
 def inverse_action(action):
-    """Retourne le mouvement inverse ('R' -> 'R\'', 'R\'' -> 'R')."""
+    """retourne le mouvement inverse ('R' -> 'R\'', 'R\'' -> 'R')."""
     return action[0] if action.endswith("'") else action + "'"
 
 
 class RubiksCube:
     """
-    Classe représentant un Rubik's Cube utilisant pycuber.
+    classe représentant un Rubik's Cube utilisant pycuber.
     Fournit une interface pour manipuler le cube et obtenir sa représentation.
     """
     _solved_str = str(pc.Cube())
@@ -82,7 +82,7 @@ class RubiksCube:
         # Nous allons obtenir les couleurs des centres directement du cube à l'état résolu
         # pour rendre cela plus robuste.
 
-        # Le mappage est calculé une seule fois pour la classe (voir _CENTER_COLOR_MAP) :
+        # le mappage est calculé une seule fois pour la classe (voir _CENTER_COLOR_MAP):
         # le recréer à chaque instance doublait le coût de clone()
         self.center_color_map = RubiksCube._CENTER_COLOR_MAP
 
@@ -114,12 +114,12 @@ class RubiksCube:
 
     def scramble(self, num_moves, p=False, sequence=None):
         """
-        Mélange le cube avec un nombre spécifié de mouvements aléatoires ou une séquence donnée.
+        mélange le cube avec un nombre spécifié de mouvements aléatoires ou une séquence donnée.
         """
         if sequence is None:
             generated_sequence = []
             for _ in range(num_moves):
-                # Évite les mouvements qui s'annulent (R puis R') et les triplés (R R R = R').
+                # évite les mouvements qui s'annulent (R puis R') et les triplés (R R R = R').
                 # Les doublés (R R = demi-tour R2) restent autorisés.
                 available_actions = list(self.action_list)
                 if generated_sequence:
@@ -141,12 +141,12 @@ class RubiksCube:
         return self.last_scramble_sequence
 
     def is_solved(self):
-        """Vérifie si le cube est dans un état résolu"""
+        """vérifie si le cube est dans un état résolu"""
         return str(self.cube) == RubiksCube._solved_str
 
     def get_matrix_state(self):
         """
-        Retourne une représentation one-hot 20x24 du cube, aplatie en 480 éléments.
+        retourne une représentation one-hot 20x24 du cube, aplatie en 480 éléments.
         - 20 lignes: les 20 emplacements (8 coins puis 12 arêtes)
         - 24 colonnes: quelle pièce occupe l'emplacement et avec quelle orientation
           (coins: 8 pièces x 3 orientations, arêtes: 12 pièces x 2 orientations)
@@ -177,10 +177,10 @@ class RubiksCube:
         return state_matrix.flatten()  # Retourne un vecteur de 20*24 = 480 éléments
 
     def clone(self):
-        """Crée une copie du cube actuel"""
+        """crée une copie du cube actuel"""
         cube_copy = self.cube.copy()
 
-        # Créer un nouveau RubiksCube avec cette copie
+        # créer un nouveau RubiksCube avec cette copie
         new_cube = RubiksCube(cube_copy)
         new_cube.last_scramble_depth = self.last_scramble_depth
         new_cube.last_scramble_sequence = self.last_scramble_sequence.copy() if self.last_scramble_sequence is not None else None
@@ -192,7 +192,7 @@ class RubiksCube:
         return self.cube.get_face(face)
 
     def display(self):
-        """Affiche l'état actuel du cube."""
+        """affiche l'état actuel du cube."""
         print(self.cube)
 
     def get_action_space(self):
@@ -220,7 +220,7 @@ class RubiksCube:
             for action in self.action_list:
                 # Crée une copie du cube actuel
                 cube_copy = self.clone()
-                # Applique l'action au cube cloné (sans calculer l'encodage comme le ferait rotate())
+                # applique l'action au cube cloné (sans calculer l'encodage comme le ferait rotate())
                 cube_copy.actions[action]()
                 # Ajoute le cube modifié à la liste des enfants
                 direct_children.append(cube_copy)
@@ -229,12 +229,12 @@ class RubiksCube:
 
     def get_kociemba_definition_string(self):
         """
-        Retourne la chaîne de 54 caractères pour Kociemba.
+        retourne la chaîne de 54 caractères pour Kociemba.
         Ordre des faces: U, R, F, D, L, B.
         Pour chaque face, les 9 facettes sont lues de gauche à droite, de haut en bas.
         """
         kociemba_str_list = []
-        # Ordre des faces tel que Kociemba les attend
+        # ordre des faces tel que Kociemba les attend
         kociemba_face_order = ['U', 'R', 'F', 'D', 'L', 'B']
 
         for face_char_kociemba_meaning in kociemba_face_order: # 'U', 'R', 'F', ...
@@ -259,7 +259,7 @@ class RubiksCube:
     @classmethod
     def from_kociemba_string(cls, definition_string):
         """
-        Construit un RubiksCube à partir d'une chaîne Kociemba de 54 caractères (faces U, R, F, D, L, B).
+        construit un RubiksCube à partir d'une chaîne Kociemba de 54 caractères (faces U, R, F, D, L, B).
         Le cube est reconstruit en appliquant à un cube résolu l'inverse de la solution de Kociemba,
         ce qui valide aussi l'état scanné. Lève ValueError si la chaîne ne décrit pas un cube valide.
         Le résultat est indépendant des couleurs du cube physique (seules les faces comptent).

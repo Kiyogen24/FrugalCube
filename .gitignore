@@ -1,8 +1,10 @@
-# Sorties des entraînements (checkpoints, journaux, courbes)
+# Sorties des entraînements et des recherches (checkpoints, journaux, résultats), les scripts sont dans experiments/
 runs/
 *.pt
+# sauf les réseaux entraînés publiés
+!models/**/*.pt
 
-# Jeu de test téléchargé (DeepCubeA via EfficientCube)
+# jeu de test téléchargé (DeepCubeA via EfficientCube) et tables de fin de partie
 data/
 
 # Cache Python
@@ -10,9 +12,20 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 
-# Environnements virtuels
+# environnements virtuels, dont ceux des références CNOT (IBM: .qenv, AlphaCNOT: .aenv)
 venv/
 .venv/
+.qenv/
+.aenv/
+
+# Dépôts publiés clonés pour les comparaisons (AlphaCNOT, DeepCubeA, CayleyPy)
+ext/
+
+# notes internes (règles de style, guide de la session GPU)
+notes/
+
+# Article: pas versionné pour l'instant
+paper/
 
 # IDE et système
 .idea/

@@ -66,7 +66,7 @@ def test_symmetry_group():
     assert np.array_equal(fc.SYMMETRIES[0], fc.SOLVED)
     for row in fc.ACTION_PERM:
         assert sorted(row.tolist()) == list(range(12))
-    # les symétries avec miroir changent le sens de rotation : R devient un quart de tour anti-horaire
+    # les symétries avec miroir changent le sens de rotation: R devient un quart de tour anti-horaire
     clockwise = {a for a, name in enumerate(fc.ACTIONS) if not name.endswith("'")}
     flips = [fc.ACTION_PERM[k][fc.ACTIONS.index("R")] not in clockwise for k in range(48)]
     assert sum(flips) == 24

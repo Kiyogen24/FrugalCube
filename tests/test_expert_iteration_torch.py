@@ -18,7 +18,7 @@ def test_search_examples_follow_verified_solutions():
     net = nt.ResMLP(hidden=32, width=16, blocks=1).eval()
     heuristic = bt.NetworkHeuristic(net, CUBE)
     g = torch.Generator().manual_seed(0)
-    # faisceau plus large que l'arbre à 3 coups : toutes les solutions sont trouvées, et jamais plus longues
+    # faisceau plus large que l'arbre à 3 coups: toutes les solutions sont trouvées, et jamais plus longues
     examples, stats = exit_torch.search_examples(heuristic, CUBE, 6, 3, 3, 2048, 5, 1.0, g)
     assert stats["attempted"] == 6 and stats["solved"] == 6 and stats["kept"] == 6
     states, labels, remaining = examples
@@ -57,7 +57,7 @@ def test_expert_iteration_run(tmp_path):
 
 
 def test_expert_iteration_respects_time_budget_with_hard_cubes(tmp_path):
-    # réseau non entraîné, cubes complètement mélangés : chaque recherche échoue après 40 profondeurs
+    # réseau non entraîné, cubes complètement mélangés: chaque recherche échoue après 40 profondeurs
     out = run_exit(tmp_path, "--cubes-per-round", "256", "--depth-min", "20", "--depth-max", "26",
                    "--search-width", "256")
     _, meta = nt.load(out / "final.pt")

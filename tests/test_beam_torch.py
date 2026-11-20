@@ -13,7 +13,7 @@ CUBE = ct.TorchCube("cpu")
 
 
 class Uniform:
-    """Heuristique constante : le faisceau devient un parcours en largeur exact s'il est assez large."""
+    """Heuristique constante: le faisceau devient un parcours en largeur exact s'il est assez large."""
 
     def __init__(self, mode="policy"):
         self.cube, self.mode = CUBE, mode
@@ -98,7 +98,7 @@ def test_every_view_maps_back_to_an_optimal_solution():
 
 def test_multi_root_beam_and_portfolio_find_optimal_solutions():
     for seed in range(6):
-        # profondeur au plus 3 : avec six racines, le faisceau reste un parcours en largeur exact
+        # profondeur au plus 3: avec six racines, le faisceau reste un parcours en largeur exact
         state, distance = scrambled(300 + seed, 1 + seed % 3)
         result = bt.solve(Uniform(), state, width=2048, max_depth=6, views=VIEWS + ["id"])   # doublon toléré
         check(state, result)

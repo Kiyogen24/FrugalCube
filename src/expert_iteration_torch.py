@@ -3,13 +3,13 @@ Boucle recherche -> étiquettes (itération experte) en PyTorch, à budget de te
 
 À chaque tour, des cubes mélangés de --depth-min à --depth-max coups sont résolus par le faisceau avec le réseau
 courant. Quand une solution n'est pas plus longue que le mélange (--max-length-ratio), chacun de ses états
-devient un exemple : le coup suivant de la solution comme étiquette de politique, la longueur restante comme
-borne de distance. C'est là que ces exemples apportent quelque chose : loin du cube résolu, l'inverse du dernier
+devient un exemple: le coup suivant de la solution comme étiquette de politique, la longueur restante comme
+borne de distance. C'est là que ces exemples apportent quelque chose: loin du cube résolu, l'inverse du dernier
 coup du mélange n'est souvent pas un bon coup. Ils vont dans un buffer, et chaque lot d'entraînement mélange une
 part --search-fraction tirée du buffer avec des exemples auto-supervisés neufs, pour ne rien oublier.
 Le temps de recherche compte dans le budget. Le témoin à temps égal est train_torch.py avec le même --init.
 
-Usage :
+Usage:
     python src/expert_iteration_torch.py --init runs/auto_supervise/final.pt --minutes 60 --out-dir runs/exit
 """
 import argparse
@@ -44,7 +44,7 @@ def search_examples(heuristic, cube, n_cubes, depth_min, depth_max, width, max_d
         stats["solved"] += 1
         stats["length_ratios"].append(len(solution) / length)
         if len(solution) > max_length_ratio * length:
-            continue   # plus longue que le mélange : moins bonne que l'étiquette gratuite
+            continue   # plus longue que le mélange: moins bonne que l'étiquette gratuite
         stats["kept"] += 1
         state = start
         for i, action in enumerate(solution):

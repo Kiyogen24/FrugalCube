@@ -67,7 +67,7 @@ def test_random_walks_follow_scramble_rule_and_labels_undo_last_move():
 
     batch_states, labels, depths = CUBE.self_supervised_batch(50, 12, generator=g)
     assert batch_states.shape == (600, 54) and labels.shape == (600,) and depths.min() == 1 and depths.max() == 12
-    # l'étiquette ramène au préfixe précédent : au cube résolu pour la profondeur 1
+    # l'étiquette ramène au préfixe précédent: au cube résolu pour la profondeur 1
     undone = CUBE.apply_actions(batch_states, labels)
     assert CUBE.is_solved(undone[depths == 1]).all()
     depth2 = (depths == 2).nonzero().squeeze(1)
@@ -82,11 +82,11 @@ def test_random_walks_draw_uniformly_among_allowed_moves():
         return np.bincount(moves, minlength=12) / len(moves)
 
     assert np.allclose(frequencies(a[0]), 1 / 12, atol=0.005)
-    # après le coup 0 : tous les coups sauf son inverse
+    # après le coup 0: tous les coups sauf son inverse
     second = frequencies(a[1][a[0] == 0])
     allowed = np.arange(12) != fc.INVERSE_ACTION[0]
     assert second[~allowed].sum() == 0 and np.allclose(second[allowed], 1 / 11, atol=0.01)
-    # après deux fois le coup 0 : ni son inverse, ni une troisième fois
+    # après deux fois le coup 0: ni son inverse, ni une troisième fois
     third = frequencies(a[2][(a[0] == 0) & (a[1] == 0)])
     allowed &= np.arange(12) != 0
     assert third[~allowed].sum() == 0 and np.allclose(third[allowed], 1 / 10, atol=0.03)
