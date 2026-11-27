@@ -10,9 +10,13 @@ Même boucle que leur apply_AlphaCNOT / run_validation (gumbel_muzero_policy, r�
 ligne t, but = identité). "k shots" = meilleur de k épisodes à graines différentes (leur AlphaCNOT_100 = 100 shots).
 Chaque solution est rejouée de notre côté (circuit_torch) pour vérifier qu'elle atteint l'identité.
 Les checkpoints .pkl sont lus par un unpickler restreint aux trois classes numpy qu'ils contiennent.
+Si leur topologie est la nôtre à une renumérotation des qubits près (8-F et 8-T1 d'AlphaCNOT contre 8qF et 8qT1
+d'IBM), la matrice est renumérotée dans leur sens et leurs coups ramenés dans le nôtre: le nombre de CNOT ne change pas.
+--start et --cases découpent un run entre plusieurs processus (mêmes graines qu'un run unique).
 """
 import argparse
 import functools
+import itertools
 import json
 import os
 import pickle
@@ -45,6 +49,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--n", type=int, default=8)
 parser.add_argument("--topology", required=True, help="nom AlphaCNOT : H, T2, T1, F, L, T, Y, ALL")
 parser.add_argument("--instances", required=True)
+parser.add_argument("--start", type=int, default=0, help="indice de la première instance")
 parser.add_argument("--cases", type=int, default=0)
 parser.add_argument("--shots", default="1,10", help="meilleur de k épisodes, pour chaque k")
 parser.add_argument("--out", required=True)
@@ -59,11 +64,19 @@ if spec["n"] != args.n:
     raise ValueError("nombre de qubits")
 ours = sorted({(min(a, b), max(a, b)) for a, b in spec["edges"]})
 theirs = sorted({(min(a, b), max(a, b)) for a, b in pairs})
-if ours != theirs:
+# notre qubit q est leur qubit perm[q]; l'identité est essayée en premier, donc rien ne change si les graphes sont égaux
+perm = next((p for p in itertools.permutations(range(args.n))
+             if sorted((min(p[a], p[b]), max(p[a], p[b])) for a, b in ours) == theirs), None)
+if perm is None:
     raise ValueError(f"topologies différentes : instances {ours}, AlphaCNOT {theirs}")
-mats = [np.asarray(m, dtype=np.float32) for m in spec["instances"][:args.cases or None]]
+inv = [perm.index(q) for q in range(args.n)]
+first = args.start
+raw = spec["instances"][first:first + args.cases if args.cases else None]
+# leur matrice: M'[perm[i]][perm[j]] = M[i][j]
+mats = [np.asarray(m, dtype=np.float32) for m in raw]
+theirs_mats = [m[np.ix_(inv, inv)] for m in mats]
 print(f"AlphaCNOT {args.n}{args.topology} : {num_actions} coups, {config['num_simulations']} simulations MCTS, "
-      f"au plus {config.get('max_steps', 4 * args.n ** 2)} coups", flush=True)
+      f"au plus {config.get('max_steps', 4 * args.n ** 2)} coups, renumérotation {list(perm)}", flush=True)
 
 rec_fn = get_recurrent_fn_simple(env, V_net.apply, pi_net.apply, config)
 
@@ -98,7 +111,8 @@ def episode(matrix, key):
         key, sub = jax.random.split(key)
         a = int(get_action(params, sub, state))
         state, _, _, done, info = env.step(a, state)
-        moves.append(pairs[a])
+        c, t = pairs[a]
+        moves.append((inv[c], inv[t]))                           # ramené dans notre numérotation
         if bool(info["is_solved"]):
             return moves
         if bool(done):
@@ -113,15 +127,16 @@ def replay(matrix, moves):
     return rows == [1 << i for i in range(len(rows))]
 
 
-episode(mats[0], jax.random.PRNGKey(1))                         # compilation
+episode(theirs_mats[0], jax.random.PRNGKey(1))                  # compilation
 os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 for k in [int(x) for x in args.shots.split(",")]:
     lengths, times = [], []
-    for i, m in enumerate(mats):
+    for j, (m, mt) in enumerate(zip(mats, theirs_mats)):
+        i = first + j                                            # indice global: mêmes graines qu'un run unique
         t0 = time.perf_counter()
         best = None
         for s in range(k):
-            moves = episode(m, jax.random.PRNGKey(1000 * i + s))
+            moves = episode(mt, jax.random.PRNGKey(1000 * i + s))
             if moves is not None:
                 if not replay(m, moves):
                     raise RuntimeError(f"solution AlphaCNOT fausse (instance {i})")

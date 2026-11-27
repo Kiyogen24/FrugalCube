@@ -14,11 +14,12 @@ search, with a network trained on a laptop, also synthesises short CNOT circuits
 
 | Solver | Optimal solutions | Mean length | Time per cube |
 | --- | --- | --- | --- |
-| FrugalCube, width 2^18.5 + endgame table (mean of three trainings) | 84.8 % | 20.94 | 0.89 s |
+| FrugalCube, width 2^18.5 + endgame table | 84.1 % | 20.96 | 0.89 s |
 | FrugalCube, width 2^21 + endgame table | 92.5 % | 20.79 | 4.5 s |
 | CayleyPy's released network, width 2^18, same GPU (first 200 cubes) | 77.5 % | 21.09 | 15.9 s |
 
-On those 200 cubes, FrugalCube at one second finds 85.8 % optimal solutions.
+On those 200 cubes, FrugalCube at one second finds 84.5 % optimal solutions. All numbers are for the first of three
+trainings, the weakest; the other two find 85.2 and 85.0 % at one second.
 
 **CNOT synthesis**, 200 random matrices per layout, one CPU core per method: on IBM's 8-qubit layouts, FrugalCube in
 under one second per circuit matches or beats AlphaCNOT's best of 100 searches (about 27 s). From width 1024 it beats
@@ -56,7 +57,7 @@ Raw results, intermediate checkpoints (`runs/`) and the endgame tables (`data/`)
 | --- | --- |
 | `models/cube/focused_seed0.pt`, `_seed1.pt`, `_seed2.pt` | The final cube network (3.9M parameters, lengths 9 to 18 kept more often), three trainings with different seeds; seed 0 is the network studied in the paper |
 | `models/cube/uniform_seed0.pt`, `_seed1.pt`, `_seed2.pt` | The same network trained on uniform lengths, three seeds |
-| `models/cnot/8-H.pt`, `8-T2.pt`, `9-L.pt` | The CNOT networks (0.22M parameters) of IBM's three layouts |
+| `models/cnot/8-H.pt`, `8-T2.pt`, `8-F.pt`, `8-T1.pt`, `9-L.pt` | The CNOT networks (0.22M parameters) of IBM's five layouts |
 
 Each file holds the weights, the architecture and the training arguments, and loads with
 `torch.load(path, weights_only=True)`. To solve the 1000 test cubes at one second per cube with the first one:
